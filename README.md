@@ -1,0 +1,159 @@
+# SQLite
+
+SQLite for web applications. Correct pragmas, type-aware binding, immediate write transactions with retry, schema introspection and idempotent migrations. Zero dependencies, no ORM.
+
+SQLite is an excellent production database for a single-server application. Its defaults are not, because they're tuned for an embedded database on a phone.
+
+## Features
+
+- ⚡ **WAL by default** — readers and the writer proceed concurrently, instead of blocking each other.
+- 🔢 **Typed binding** — fixes the silent-wrong-answer class of bug PDO's string-everything default causes.
+- 🔒 **Immediate write transactions** — avoids the `SQLITE_BUSY` that `busy_timeout` famously does *not* retry.
+- 🔁 **Automatic retry** — exponential backoff with jitter on genuine lock contention.
+- 🧱 **Idempotent migrations** — named, recorded, each in its own transaction.
+- 🔍 **Schema introspection** — `has_table()`, `has_column()`, `add_column()`.
+- 🛡️ **Identifier validation** — table and column names are validated, never escaped-and-hoped.
+- 🚫 **No ORM** — helpers for the boring 90%, raw SQL for everything else.
+
+## Requirements
+
+PHP 8.5+, `ext-pdo_sqlite`
+
+## Installation
+
+```bash
+composer require sugarmill/sqlite
+```
+
+## Usage
+
+```php
+use SugarMill\Sqlite\Database;
+
+$db = Database::open( '/var/www/data/app.db' );
+
+$rows  = $db->all( 'SELECT * FROM orders WHERE total >= :min', [ 'min' => 500 ] );
+$order = $db->row( 'SELECT * FROM orders WHERE id = :id', [ 'id' => 42 ] );
+$count = $db->value( 'SELECT COUNT(*) FROM orders' );
+
+$id = $db->insert( 'orders', [ 'email' => 'a@b.com', 'total' => 999 ] );
+$db->update( 'orders', [ 'status' => 'paid' ], [ 'id' => $id ] );
+$db->delete( 'orders', [ 'id' => $id ] );
+```
+
+`update()` and `delete()` refuse an empty `WHERE` rather than rewriting the table.
+
+## The two bugs this exists to prevent
+
+### Binding integers as strings
+
+`PDOStatement::execute( $array )` binds every value as a string. Against a plain column that's usually survivable — the column's INTEGER affinity coerces it back. Against an **expression** there's no affinity to apply, and SQLite orders every integer below every string:
+
+```php
+// Matches every row, whatever the totals are:
+$stmt->execute( [ ':n' => 5 ] );   // '5' as TEXT
+// SELECT ... GROUP BY id HAVING SUM(stock) <= :n
+```
+
+No error, just a wrong answer — and it only appears once someone wraps a column in `SUM()`, `COALESCE()` or `CAST()`. `query()` binds by PHP type, so it can't happen.
+
+### Deferred write transactions
+
+PDO's `beginTransaction()` issues a plain `BEGIN`, which is *deferred*: the transaction takes a read lock and only tries to upgrade on the first write. If another connection committed in between, SQLite returns `SQLITE_BUSY_SNAPSHOT` — and **deliberately does not invoke the busy handler**, because waiting can't refresh a stale snapshot. Your `busy_timeout` never fires. The write throws under concurrency and behaves perfectly in testing.
+
+`transaction()` uses `BEGIN IMMEDIATE`, taking the write lock up front, which turns that into ordinary contention — which *is* retried:
+
+```php
+$db->transaction( function ( Database $db ) {
+    $id = $db->insert( 'orders', [ 'email' => 'a@b.com' ] );
+    $db->insert( 'order_items', [ 'order_id' => $id, 'sku' => 'X' ] );
+} );
+```
+
+Rolls back and rethrows on any exception. Nested calls join the outer transaction — SQLite has no nested transactions, and committing an inner one would end the outer early.
+
+For read-only work wanting a consistent snapshot, `read_transaction()` stays deferred.
+
+## Configuration
+
+```php
+Database::open( $path );                      // Config::production()
+Database::open( $path, Config::durable() );   // synchronous = FULL
+Database::memory( $schema );                  // in-memory, for tests
+```
+
+`Config::production()` sets:
+
+| Pragma | Value | Why |
+|---|---|---|
+| `journal_mode` | `WAL` | Readers don't block the writer |
+| `synchronous` | `NORMAL` | fsync per checkpoint, not per commit |
+| `busy_timeout` | `5000` | Wait for locks rather than failing |
+| `foreign_keys` | `ON` | Off by default in SQLite |
+| `cache_size` | 8MB | Per connection |
+| `mmap_size` | 256MB | Helps read-heavy workloads |
+| `temp_store` | `MEMORY` | Sort/join scratch out of the filesystem |
+
+**On `synchronous = NORMAL`:** under WAL this is the standard production setting, but it's a real trade. An OS crash or power cut can lose the last few *committed* transactions. An application crash cannot, and the database never corrupts either way. Use `Config::durable()` when losing a committed write is unacceptable and you have no external source of truth to replay from.
+
+**WAL needs local disk.** It corrupts over NFS and most network filesystems.
+
+## Migrations
+
+```php
+use SugarMill\Sqlite\{Migrator, Database, Schema};
+
+$migrator = new Migrator( $db );
+
+$migrator->add( 'add_orders_metadata', function ( Database $db, Schema $schema ) {
+    $schema->add_column( 'orders', 'metadata', "TEXT NOT NULL DEFAULT '{}'" );
+} );
+
+$applied = $migrator->run();   // ['add_orders_metadata']
+```
+
+Each runs once, inside its own immediate transaction. A failure rolls back and leaves the migration unrecorded, so you fix it and run again.
+
+Write the bodies defensively with `Schema` anyway. A tracking table only knows what *this* runner did — not about a column someone added by hand, or a database restored from a mid-sequence backup.
+
+Adopting this on a database that's already current:
+
+```php
+$migrator->baseline( 'add_orders_metadata', 'add_customers_country' );
+```
+
+## Schema introspection
+
+```php
+$schema = $db->schema();
+
+$schema->tables();
+$schema->has_table( 'orders' );
+$schema->columns( 'orders' );
+$schema->has_column( 'orders', 'metadata' );
+$schema->has_index( 'idx_orders_email' );
+$schema->add_column( 'orders', 'metadata', "TEXT NOT NULL DEFAULT '{}'" );  // false if present
+```
+
+## Maintenance
+
+```php
+$db->checkpoint();          // fold the -wal file back in, before a backup
+$db->optimize();            // PRAGMA optimize — cheap, run periodically
+$db->integrity_check();     // true, or the problem found
+```
+
+For backups, [Litestream](https://litestream.io) streams the WAL to S3-compatible storage continuously. That's the standard answer for SQLite in production, and it beats anything you'd script.
+
+## Testing
+
+```bash
+composer install
+composer test
+```
+
+56 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical.
+
+## License
+
+GPL-2.0-or-later
