@@ -3,7 +3,7 @@ declare( strict_types=1 );
 require __DIR__ . '/../vendor/autoload.php';
 require __DIR__ . '/../../bench-lib.php';
 
-use SugarMill\Sqlite\Database;
+use Sugar\Sqlite\Database;
 
 $db = Database::memory( 'CREATE TABLE t ( id INTEGER PRIMARY KEY, name TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0 );' );
 

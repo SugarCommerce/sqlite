@@ -22,13 +22,13 @@ PHP 8.5+, `ext-pdo_sqlite`
 ## Installation
 
 ```bash
-composer require sugarmill/sqlite
+composer require sugarcommerce/sqlite
 ```
 
 ## Usage
 
 ```php
-use SugarMill\Sqlite\Database;
+use Sugar\Sqlite\Database;
 
 $db = Database::open( '/var/www/data/app.db' );
 
@@ -101,7 +101,7 @@ Database::memory( $schema );                  // in-memory, for tests
 ## Migrations
 
 ```php
-use SugarMill\Sqlite\{Migrator, Database, Schema};
+use Sugar\Sqlite\{Migrator, Database, Schema};
 
 $migrator = new Migrator( $db );
 

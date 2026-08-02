@@ -2,7 +2,7 @@
 /**
  * Database test suite.
  *
- * @package   SugarMill\Sqlite
+ * @package   Sugar\Sqlite
  * @copyright Copyright (c) 2026, ArrayPress Limited
  * @license   GPL-2.0-or-later
  * @since     1.0.0
@@ -10,12 +10,12 @@
 
 declare( strict_types=1 );
 
-namespace SugarMill\Sqlite\Tests;
+namespace Sugar\Sqlite\Tests;
 
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
-use SugarMill\Sqlite\Config;
-use SugarMill\Sqlite\Database;
+use Sugar\Sqlite\Config;
+use Sugar\Sqlite\Database;
 
 final class DatabaseTest extends TestCase {
 
