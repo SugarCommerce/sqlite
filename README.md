@@ -28,7 +28,7 @@ composer require sugarcommerce/sqlite
 ## Usage
 
 ```php
-use Sugar\Sqlite\Database;
+use SugarCommerce\Sqlite\Database;
 
 $db = Database::open( '/var/www/data/app.db' );
 
@@ -101,7 +101,7 @@ Database::memory( $schema );                  // in-memory, for tests
 ## Migrations
 
 ```php
-use Sugar\Sqlite\{Migrator, Database, Schema};
+use SugarCommerce\Sqlite\{Migrator, Database, Schema};
 
 $migrator = new Migrator( $db );
 

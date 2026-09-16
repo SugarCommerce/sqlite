@@ -2,7 +2,7 @@
 /**
  * Schema and Migrator test suite.
  *
- * @package   Sugar\Sqlite
+ * @package   SugarCommerce\Sqlite
  * @copyright Copyright (c) 2026, ArrayPress Limited
  * @license   GPL-2.0-or-later
  * @since     1.0.0
@@ -10,12 +10,12 @@
 
 declare( strict_types=1 );
 
-namespace Sugar\Sqlite\Tests;
+namespace SugarCommerce\Sqlite\Tests;
 
 use PHPUnit\Framework\TestCase;
-use Sugar\Sqlite\Database;
-use Sugar\Sqlite\Migrator;
-use Sugar\Sqlite\Schema;
+use SugarCommerce\Sqlite\Database;
+use SugarCommerce\Sqlite\Migrator;
+use SugarCommerce\Sqlite\Schema;
 
 final class MigratorTest extends TestCase {
 
