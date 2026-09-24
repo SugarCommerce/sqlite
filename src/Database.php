@@ -51,12 +51,12 @@ final class Database {
 	/**
 	 * SQLite result codes meaning "try again".
 	 */
-	private const RETRYABLE = array( 5, 6 );   // SQLITE_BUSY, SQLITE_LOCKED
+	private const array RETRYABLE = array( 5, 6 );   // SQLITE_BUSY, SQLITE_LOCKED
 
 	/**
 	 * Valid `wal_checkpoint` modes.
 	 */
-	private const CHECKPOINT_MODES = array( 'PASSIVE', 'FULL', 'RESTART', 'TRUNCATE' );
+	private const array CHECKPOINT_MODES = array( 'PASSIVE', 'FULL', 'RESTART', 'TRUNCATE' );
 
 	/**
 	 * Decoders applied to named columns of every row read, by column name.
