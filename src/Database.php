@@ -59,6 +59,13 @@ final class Database {
 	private const CHECKPOINT_MODES = array( 'PASSIVE', 'FULL', 'RESTART', 'TRUNCATE' );
 
 	/**
+	 * Decoders applied to named columns of every row read, by column name.
+	 *
+	 * @var array<string, \Closure(mixed): mixed>
+	 */
+	private array $decoders = array();
+
+	/**
 	 * @since 1.0.0
 	 *
 	 * @param \PDO   $pdo    Configured connection.
@@ -168,7 +175,9 @@ final class Database {
 	 * @return array<int, array<string, mixed>>
 	 */
 	public function all( string $sql, array $params = array() ): array {
-		return $this->query( $sql, $params )->fetchAll();
+		$rows = $this->query( $sql, $params )->fetchAll();
+
+		return $this->decoders ? array_map( $this->decoded( ... ), $rows ) : $rows;
 	}
 
 	/**
@@ -184,7 +193,51 @@ final class Database {
 	public function row( string $sql, array $params = array() ): ?array {
 		$row = $this->query( $sql, $params )->fetch();
 
-		return false === $row ? null : $row;
+		return false === $row ? null : $this->decoded( $row );
+	}
+
+	/**
+	 * Decode a column wherever it is read.
+	 *
+	 * For a value stored in a form the application never wants to handle —
+	 * sealed, compressed — so it is turned back in one place rather than at
+	 * every query that happens to select it. Applied by name to rows from
+	 * row() and all(), including a column aliased to that name. value() and
+	 * column() return bare values with no name to go by, and are not
+	 * decoded: select those through row() when it matters.
+	 *
+	 * Writes are not encoded. What goes in is the caller's decision, made
+	 * once where the row is written.
+	 *
+	 * @since 1.2.0
+	 *
+	 * @param string                  $column  Column name, as it appears in
+	 *                                         the result.
+	 * @param \Closure(mixed): mixed $decoder Turns a stored value back.
+	 *
+	 * @return self
+	 */
+	public function decode( string $column, \Closure $decoder ): self {
+		$this->decoders[ $column ] = $decoder;
+
+		return $this;
+	}
+
+	/**
+	 * A row with its decoded columns decoded.
+	 *
+	 * @param array<string, mixed> $row Fetched row.
+	 *
+	 * @return array<string, mixed>
+	 */
+	private function decoded( array $row ): array {
+		foreach ( $this->decoders as $column => $decoder ) {
+			if ( array_key_exists( $column, $row ) ) {
+				$row[ $column ] = $decoder( $row[ $column ] );
+			}
+		}
+
+		return $row;
 	}
 
 	/**
@@ -500,6 +553,31 @@ final class Database {
 		$result = (string) $this->pdo->query( 'PRAGMA integrity_check' )->fetchColumn();
 
 		return 'ok' === $result ? true : $result;
+	}
+
+	/**
+	 * Write a consistent copy of the database to a new file.
+	 *
+	 * `VACUUM INTO` rather than copying the file: it is SQLite's own
+	 * snapshot, safe against a live WAL database, where `cp` can catch the
+	 * file and its `-wal` at different moments. The copy is also compacted.
+	 *
+	 * @since 1.1.0
+	 *
+	 * @param string $path Where the copy goes. Must not exist yet.
+	 *
+	 * @return void
+	 *
+	 * @throws \RuntimeException When the file already exists — SQLite would
+	 *                           refuse anyway, less clearly.
+	 */
+	public function snapshot( string $path ): void {
+		if ( file_exists( $path ) ) {
+			throw new \RuntimeException( 'A snapshot will not overwrite ' . $path );
+		}
+
+		// Bound, not interpolated: it is still a string reaching SQL.
+		$this->query( 'VACUUM INTO :path', array( 'path' => $path ) );
 	}
 
 	/**

@@ -135,12 +135,43 @@ $schema->has_index( 'idx_orders_email' );
 $schema->add_column( 'orders', 'metadata', "TEXT NOT NULL DEFAULT '{}'" );  // false if present
 ```
 
+## Decoding columns
+
+```php
+$db->decode( 'email', fn ( mixed $v ): mixed => $sealer->reveal( $v ) );
+```
+
+Every row from `row()` and `all()` has that column decoded, whichever query selected it — for values stored sealed or compressed, so turning them back is one line at boot rather than a line at every query. `value()` and `column()` return bare values and are not decoded.
+
+## Cache
+
+A key-value cache in a table, for values fetched from somewhere slow or rate-limited:
+
+```php
+use SugarCommerce\Sqlite\Cache;
+
+$db->pdo()->exec( Cache::SCHEMA );   // or put it in your schema / a migration
+
+$cache = new Cache( $db );
+
+$json = $cache->remember( 'catalogue:acct_1', 300, function (): ?string {
+    $products = $api->products();              // null when the API is down
+    return null === $products ? null : json_encode( $products );
+} );
+
+$cache->forget( 'catalogue:acct_1' );          // after the source changed
+$cache->purge();                               // from cron
+```
+
+`remember()` never stores a failed fetch, and falls back to the expired value when the source cannot be reached — last week's answer beats an empty page. Expired rows stay until `purge()` for that reason.
+
 ## Maintenance
 
 ```php
 $db->checkpoint();          // fold the -wal file back in, before a backup
 $db->optimize();            // PRAGMA optimize — cheap, run periodically
 $db->integrity_check();     // true, or the problem found
+$db->snapshot( $path );     // VACUUM INTO: a consistent copy of a live database
 ```
 
 For backups, [Litestream](https://litestream.io) streams the WAL to S3-compatible storage continuously. That's the standard answer for SQLite in production, and it beats anything you'd script.
@@ -152,7 +183,7 @@ composer install
 composer test
 ```
 
-56 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical.
+71 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical.
 
 ## License
 

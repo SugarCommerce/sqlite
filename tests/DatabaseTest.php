@@ -350,6 +350,50 @@ final class DatabaseTest extends TestCase {
 
 	/* ─── Maintenance ───────────────────────────────────────────────── */
 
+	public function test_a_snapshot_is_a_readable_copy(): void {
+		$path = sys_get_temp_dir() . '/snapshot-' . bin2hex( random_bytes( 4 ) ) . '.db';
+
+		$this->seeded()->snapshot( $path );
+
+		try {
+			$this->assertSame( 6, Database::open( $path )->count( 'products' ) );
+		} finally {
+			@unlink( $path );
+		}
+	}
+
+	public function test_a_snapshot_will_not_overwrite(): void {
+		$path = (string) tempnam( sys_get_temp_dir(), 'snap' );
+
+		try {
+			$this->expectException( \RuntimeException::class );
+
+			$this->seeded()->snapshot( $path );
+		} finally {
+			@unlink( $path );
+		}
+	}
+
+	/* ─── Column decoders (1.2.0) ──────────────────────────────────── */
+
+	public function test_a_decoded_column_is_decoded_in_every_row(): void {
+		$db = $this->seeded()->decode( 'title', static fn ( mixed $v ): string => strtoupper( (string) $v ) );
+
+		$this->assertSame( 'P1', $db->row( 'SELECT title FROM products WHERE stock = 1' )['title'] );
+		$this->assertSame( array( 'P1', 'P3' ), array_column( $db->all( 'SELECT title FROM products WHERE stock < 5 ORDER BY stock' ), 'title' ) );
+	}
+
+	public function test_an_alias_to_the_name_is_decoded_too(): void {
+		$db = $this->seeded()->decode( 'title', static fn ( mixed $v ): string => '[' . $v . ']' );
+
+		$this->assertSame( '[p1]', $db->row( 'SELECT note AS x, title FROM products WHERE stock = 1' )['title'] );
+		$this->assertSame( 'p1', $db->row( 'SELECT title AS name FROM products WHERE stock = 1' )['name'], 'Other names are left alone.' );
+	}
+
+	public function test_without_decoders_rows_are_untouched(): void {
+		$this->assertSame( 'p1', $this->seeded()->row( 'SELECT title FROM products WHERE stock = 1' )['title'] );
+	}
+
 	public function test_integrity_check_passes_on_a_healthy_database(): void {
 		$this->assertTrue( $this->seeded()->integrity_check() );
 	}
