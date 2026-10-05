@@ -13,6 +13,10 @@ SQLite is an excellent production database for a single-server application. Its 
 - 🧱 **Idempotent migrations** — named, recorded, each in its own transaction.
 - 🔍 **Schema introspection** — `has_table()`, `has_column()`, `add_column()`.
 - 🛡️ **Identifier validation** — table and column names are validated, never escaped-and-hoped.
+- 🔂 **Duplicates as answers** — `insert_or_ignore()`, `upsert()` (columns or expression targets) and `is_unique_violation()`.
+- 📋 **Lists** — `in()` and `ids()` for `IN ( … )`, empty lists included.
+- 🧹 **Dry-run housekeeping** — `sweep()` deletes, updates or only counts, from one condition.
+- 💾 **Rotating backups** — dated snapshots, pruned by name.
 - 🚫 **No ORM** — helpers for the boring 90%, raw SQL for everything else.
 
 ## Requirements
@@ -165,6 +169,67 @@ $cache->purge();                               // from cron
 
 `remember()` never stores a failed fetch, and falls back to the expired value when the source cannot be reached — last week's answer beats an empty page. Expired rows stay until `purge()` for that reason.
 
+`add()` is the other half: it stores only when nothing is there, and says whether it did — one insert that the key's uniqueness decides, so two requests racing with the same signature or nonce cannot both win. An entry `purge()` would remove no longer counts. `expire()` makes a value stale without losing it, so the next `remember()` fetches again and still has it to fall back on; `forget()` during an upstream outage leaves nothing.
+
+```php
+if ( ! $cache->add( 'nonce:' . $nonce, '1', 300 ) ) {
+    return 'replayed';
+}
+
+$cache->expire( 'catalogue:acct_1' );          // refresh, but keep a fallback
+```
+
+## Writing what is already there
+
+```php
+// One notice per buyer, ever: false when the unique key already holds one.
+$queued = $db->insert_or_ignore( 'notices', [ 'dedupe_key' => "version:{$file}:{$buyer}", 'body' => $body ] );
+
+// Insert, or update the row holding the key — in one statement.
+$db->upsert( 'options', [ 'key' => 'theme', 'value' => 'dark' ], [ 'key' ] );
+
+// Choose what an update changes: list entries take the new value,
+// 'column' => value pairs are set (bound) instead.
+$db->upsert( 'members', $row, [ 'grant_id', 'user_id' ], [ 'status', 'attempts' => 0, 'last_error' => null ] );
+
+// A unique index on an expression is named by repeating it — SQL, as is.
+$db->upsert( 'policies', $row, "product, ifnull( price, '' )", [ 'seats' ] );
+
+// Insert-and-catch, where the duplicate needs its own answer.
+try {
+    $db->insert( 'claims', $row );
+} catch ( \PDOException $e ) {
+    if ( ! Database::is_unique_violation( $e ) ) {
+        throw $e;               // a busy database is not "already claimed"
+    }
+}
+```
+
+`insert_or_ignore()` is `ON CONFLICT DO NOTHING`, not `INSERT OR IGNORE`. The second also skips a row that breaks NOT NULL or CHECK, so a bug writing a null looks exactly like a duplicate; this skips only a uniqueness conflict. `is_unique_violation()` reads SQLite's result code rather than looking for "UNIQUE" in a message that can contain a table's name.
+
+## Lists
+
+PDO cannot bind a list to one placeholder, so every application grows a loop that builds `:p0, :p1, …`, and then several copies of it.
+
+```php
+[ $in, $params ] = Database::in( 'plan', $plans );
+$db->value( "SELECT COUNT(*) FROM accounts WHERE plan NOT IN ( {$in} )", $params );
+
+// Ids from an earlier query: cast to integers, so only digits reach SQL.
+$db->all( 'SELECT * FROM items WHERE order_id IN ( ' . Database::ids( $orders ) . ' )' );
+```
+
+An empty list gives `IN ()`, which SQLite accepts: nothing is in it, and everything is not in it. No sentinel `0` that might one day be a real id.
+
+## Housekeeping
+
+```php
+$removed = $db->sweep( 'sessions', 'expires_at < :now', [ 'now' => time() ], dry: $dry );
+$blanked = $db->sweep( 'logs', 'date_created < :before', [ 'before' => $cutoff ], set: 'ip = NULL', dry: $dry );
+```
+
+Delete or update what a condition matches, or with `dry` only count it. Written as two branches at every call site, the dry run is the branch nobody tests, and one day a "dry" run deletes for real; here both share the condition. The condition and SET clause are SQL from your code, never from input.
+
 ## Maintenance
 
 ```php
@@ -172,9 +237,24 @@ $db->checkpoint();          // fold the -wal file back in, before a backup
 $db->optimize();            // PRAGMA optimize — cheap, run periodically
 $db->integrity_check();     // true, or the problem found
 $db->snapshot( $path );     // VACUUM INTO: a consistent copy of a live database
+$db->exec_file( 'schema.sql' );   // every statement in a file; throws if unreadable
 ```
 
 For backups, [Litestream](https://litestream.io) streams the WAL to S3-compatible storage continuously. That's the standard answer for SQLite in production, and it beats anything you'd script.
+
+Without it, `Backups` keeps dated snapshots in a directory and prunes them:
+
+```php
+use SugarCommerce\Sqlite\Backups;
+
+$backups = new Backups( $db, '/var/backups/app', 'app', keep: 14 );
+
+$path = $backups->take();     // app-20261006-030000.db, via snapshot()
+$backups->prune();            // all but the newest 14
+$backups->newest();           // when the last one was written, for a health check
+```
+
+Pruned by name, which is the time the copy was taken, not by modification time — touching an old copy to look at it does not make a newer one the one that goes. The directory is created owner-only: a copy of the database is the database. Getting a copy off the box is yours: `take()` returns the path.
 
 ## Testing
 
@@ -183,7 +263,7 @@ composer install
 composer test
 ```
 
-71 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical.
+109 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical. Also covered: insert-or-ignore that still refuses a broken row, upserts on columns and on expressions, unique-violation detection, empty and hostile lists, dry-run sweeps, the cache's first-caller-wins `add()`, and backup rotation by name.
 
 ## License
 

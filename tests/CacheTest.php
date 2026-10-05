@@ -112,4 +112,71 @@ final class CacheTest extends TestCase {
 
 		( new Cache( Database::memory(), 'cache; DROP TABLE x' ) )->get( 'k' );
 	}
+
+	/* ─── Add: first caller wins (1.3.0) ────────────────────────────── */
+
+	/**
+	 * A replay guard: the second request with the same signature loses.
+	 */
+	public function test_only_the_first_add_stores(): void {
+		$cache = $this->cache();
+
+		$this->assertTrue( $cache->add( 'sig', '1', 300, self::NOW ) );
+		$this->assertFalse( $cache->add( 'sig', '2', 300, self::NOW + 10 ) );
+		$this->assertSame( '1', $cache->get( 'sig', self::NOW + 10 ) );
+	}
+
+	public function test_an_add_does_not_take_over_a_value_put_there(): void {
+		$cache = $this->cache();
+
+		$cache->put( 'k', 'v', 60, self::NOW );
+
+		$this->assertFalse( $cache->add( 'k', 'w', 60, self::NOW ) );
+	}
+
+	/**
+	 * Once a key's time is up it can be taken again, without waiting for
+	 * housekeeping to run.
+	 */
+	public function test_an_expired_entry_does_not_block_an_add(): void {
+		$cache = $this->cache();
+
+		$this->assertTrue( $cache->add( 'k', 'old', 60, self::NOW ) );
+
+		$this->assertFalse( $cache->add( 'k', 'new', 60, self::NOW + 60 ), 'At its expiry it still counts, as it does for purge().' );
+		$this->assertTrue( $cache->add( 'k', 'new', 60, self::NOW + 61 ) );
+		$this->assertSame( 'new', $cache->get( 'k', self::NOW + 61 ) );
+	}
+
+	/* ─── Expire: stale, not gone (1.3.0) ───────────────────────────── */
+
+	/**
+	 * forget() during an upstream outage leaves nothing to fall back on.
+	 */
+	public function test_an_expired_value_is_fetched_again_and_kept_as_a_fallback(): void {
+		$cache = $this->cache();
+
+		$cache->put( 'k', 'last', 3600, self::NOW );
+
+		$this->assertTrue( $cache->expire( 'k', self::NOW ) );
+		$this->assertNull( $cache->get( 'k', self::NOW ) );
+		$this->assertSame( 'last', $cache->remember( 'k', 60, fn (): ?string => null, self::NOW ) );
+		$this->assertSame( 'fresh', $cache->remember( 'k', 60, fn (): string => 'fresh', self::NOW ) );
+	}
+
+	public function test_expiring_a_missing_key_says_so(): void {
+		$this->assertFalse( $this->cache()->expire( 'nope', self::NOW ) );
+	}
+
+	/**
+	 * Expiring something already expired does not give it longer to live.
+	 */
+	public function test_expiring_never_extends(): void {
+		$cache = $this->cache();
+
+		$cache->put( 'k', 'v', 10, self::NOW - 100 );
+		$cache->expire( 'k', self::NOW );
+
+		$this->assertSame( 1, $cache->purge( self::NOW ) );
+	}
 }

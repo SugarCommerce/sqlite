@@ -134,6 +134,31 @@ final class Database {
 	}
 
 	/**
+	 * Run every statement in a SQL file, such as a schema.
+	 *
+	 * Through `PDO::exec()`, which runs a whole script; a prepared statement
+	 * runs only the first statement in it and ignores the rest, silently.
+	 *
+	 * @since 1.3.0
+	 *
+	 * @param string $path Path to the file.
+	 *
+	 * @return void
+	 *
+	 * @throws \RuntimeException When the file cannot be read — an empty
+	 *                           schema would otherwise "succeed".
+	 */
+	public function exec_file( string $path ): void {
+		$sql = is_readable( $path ) ? file_get_contents( $path ) : false;
+
+		if ( false === $sql ) {
+			throw new \RuntimeException( 'Cannot read SQL file: ' . $path );
+		}
+
+		$this->pdo->exec( $sql );
+	}
+
+	/**
 	 * The underlying PDO handle, for anything this class does not wrap.
 	 *
 	 * @since 1.0.0
@@ -286,21 +311,103 @@ final class Database {
 	 * @throws \InvalidArgumentException On an empty row or unsafe identifier.
 	 */
 	public function insert( string $table, array $data ): int {
-		if ( array() === $data ) {
-			throw new \InvalidArgumentException( 'Cannot insert an empty row.' );
-		}
-
-		$columns      = array_keys( $data );
-		$placeholders = array_map( static fn( string $c ): string => ':' . $c, $columns );
-
-		$this->query(
-			'INSERT INTO ' . self::identifier( $table )
-			. ' (' . implode( ', ', array_map( self::identifier( ... ), $columns ) ) . ')'
-			. ' VALUES (' . implode( ', ', $placeholders ) . ')',
-			$data
-		);
+		$this->query( self::insert_sql( $table, $data ), $data );
 
 		return (int) $this->pdo->lastInsertId();
+	}
+
+	/**
+	 * Insert a row unless one with the same unique key is already there.
+	 *
+	 * For a row whose unique index *is* the rule — one notice per buyer,
+	 * one payment per intent — so two requests a millisecond apart cannot
+	 * both write it. The alternative people reach for, check-then-insert,
+	 * has a window between the two that both requests pass through.
+	 *
+	 * `ON CONFLICT DO NOTHING`, not `INSERT OR IGNORE`: the second also
+	 * skips a row that breaks NOT NULL or CHECK, silently, so a bug that
+	 * writes a null where none belongs looks exactly like a duplicate.
+	 * This skips only a uniqueness conflict, and anything else still throws.
+	 *
+	 * @since 1.3.0
+	 *
+	 * @param string               $table Table name.
+	 * @param array<string, mixed> $data  Column => value.
+	 *
+	 * @return bool True when the row was written, false when it was there.
+	 *
+	 * @throws \InvalidArgumentException On an empty row or unsafe identifier.
+	 */
+	public function insert_or_ignore( string $table, array $data ): bool {
+		return $this->query( self::insert_sql( $table, $data ) . ' ON CONFLICT DO NOTHING', $data )->rowCount() > 0;
+	}
+
+	/**
+	 * Insert a row, or update the one already holding its unique key.
+	 *
+	 * One statement, so there is no moment between "is it there?" and the
+	 * write for another request to change the answer.
+	 *
+	 * The conflict target is usually column names, which are validated and
+	 * quoted like any identifier. An index on an expression — the usual way
+	 * to make a nullable column part of a unique key, `ifnull( col, '' )` —
+	 * can only be named by repeating the expression, so a string is taken
+	 * as SQL, as it is: write it in code, never from input.
+	 *
+	 * What an update changes, in `$update`:
+	 *
+	 *   - null — every inserted column outside the target takes the new
+	 *     value. Needs the target as column names.
+	 *   - `'column'` (a list entry) — takes the new value.
+	 *   - `'column' => $value` — takes this value instead, bound like any
+	 *     other: resetting a counter or clearing an error on reopening.
+	 *
+	 * @since 1.3.0
+	 *
+	 * @param string                        $table    Table name.
+	 * @param array<string, mixed>          $data     Column => value to insert.
+	 * @param string[]|string               $conflict Columns of the unique
+	 *                                                key, or the key's SQL
+	 *                                                when it has an
+	 *                                                expression in it.
+	 * @param array<int|string, mixed>|null $update   What an update changes.
+	 *
+	 * @return int Rows written: 1 whether inserted or updated.
+	 *
+	 * @throws \InvalidArgumentException On an empty row, an unsafe
+	 *                                   identifier, or nothing to update.
+	 */
+	public function upsert( string $table, array $data, array|string $conflict, ?array $update = null ): int {
+		if ( null === $update ) {
+			if ( ! is_array( $conflict ) ) {
+				throw new \InvalidArgumentException( 'Name the columns to update when the conflict target is an expression.' );
+			}
+
+			$update = array_values( array_diff( array_keys( $data ), $conflict ) );
+		}
+
+		if ( array() === $update ) {
+			throw new \InvalidArgumentException( 'An upsert with nothing to update is insert_or_ignore().' );
+		}
+
+		$target = is_array( $conflict ) ? implode( ', ', array_map( self::identifier( ... ), $conflict ) ) : $conflict;
+		$sets   = array();
+		$params = $data;
+
+		foreach ( $update as $key => $value ) {
+			if ( is_int( $key ) ) {
+				$sets[] = self::identifier( (string) $value ) . ' = excluded.' . self::identifier( (string) $value );
+				continue;
+			}
+
+			$sets[]                     = self::identifier( $key ) . ' = :upsert_' . $key;
+			$params[ 'upsert_' . $key ] = $value;
+		}
+
+		return $this->query(
+			self::insert_sql( $table, $data ) . ' ON CONFLICT (' . $target . ') DO UPDATE SET ' . implode( ', ', $sets ),
+			$params
+		)->rowCount();
 	}
 
 	/**
@@ -364,6 +471,118 @@ final class Database {
 		[ $clause, $params ] = self::where( $where );
 
 		return $this->query( 'DELETE FROM ' . self::identifier( $table ) . ' WHERE ' . $clause, $params )->rowCount();
+	}
+
+	/**
+	 * Delete or update the rows a condition matches — or only count them.
+	 *
+	 * For housekeeping that offers a dry run. Written as two branches at
+	 * every call site, the dry run is the branch nobody tests, and sooner
+	 * or later one step forgets it and a "dry" run deletes for real. Here
+	 * the two share the table and the condition, so they cannot disagree
+	 * about which rows they mean.
+	 *
+	 * The condition and the SET clause are SQL, interpolated as they are:
+	 * write them in code, never from input. Values go in `$params`.
+	 *
+	 *   $db->sweep( 'sessions', 'expires_at < :now', [ 'now' => time() ], dry: $dry );
+	 *   $db->sweep( 'logs', 'date_created < :before', [ 'before' => $cutoff ], 'ip = NULL' );
+	 *
+	 * @since 1.3.0
+	 *
+	 * @param string               $table  Table name.
+	 * @param string               $where  Condition, with named placeholders.
+	 * @param array<string, mixed> $params Values.
+	 * @param string|null          $set    SET clause for an UPDATE, or null to
+	 *                                     DELETE.
+	 * @param bool                 $dry    Count instead of changing.
+	 *
+	 * @return int Rows changed, or that would have been.
+	 *
+	 * @throws \InvalidArgumentException On an unsafe table name or an empty
+	 *                                   condition.
+	 */
+	public function sweep( string $table, string $where, array $params = array(), ?string $set = null, bool $dry = false ): int {
+		if ( '' === trim( $where ) ) {
+			throw new \InvalidArgumentException( 'Refusing to sweep every row — pass a condition.' );
+		}
+
+		$table = self::identifier( $table );
+
+		if ( $dry ) {
+			return (int) $this->value( "SELECT COUNT(*) FROM {$table} WHERE {$where}", $params, 0 );
+		}
+
+		$sql = null === $set
+			? "DELETE FROM {$table} WHERE {$where}"
+			: "UPDATE {$table} SET {$set} WHERE {$where}";
+
+		return $this->query( $sql, $params )->rowCount();
+	}
+
+	/* ─── Lists ─────────────────────────────────────────────────────── */
+
+	/**
+	 * Placeholders and parameters for an `IN ( … )` list of any values.
+	 *
+	 * PDO cannot bind a list to one placeholder, so every application ends
+	 * up with a loop that builds `:p0, :p1, …` — and a handful of copies of
+	 * it, one of which forgets array_values() and numbers from a key that
+	 * is not zero. One here.
+	 *
+	 *   [ $in, $params ] = Database::in( 'plan', $plans );
+	 *   $db->value( "SELECT COUNT(*) FROM accounts WHERE plan IN ( {$in} )", $params );
+	 *
+	 * An empty list gives `IN ()`, which SQLite accepts and matches nothing
+	 * (and `NOT IN ()` everything) — the right answer, rather than a syntax
+	 * error or a sentinel value that might one day exist.
+	 *
+	 * @since 1.3.0
+	 *
+	 * @param string            $name   Placeholder prefix, unique within the
+	 *                                  statement.
+	 * @param array<int, mixed> $values Values, bound by PHP type.
+	 *
+	 * @return array{0: string, 1: array<string, mixed>} The placeholders,
+	 *         comma-separated, and their parameters.
+	 *
+	 * @throws \InvalidArgumentException On a prefix that is not a bare name.
+	 */
+	public static function in( string $name, array $values ): array {
+		self::identifier( $name );
+
+		$params = array();
+
+		foreach ( array_values( $values ) as $index => $value ) {
+			$params[ $name . $index ] = $value;
+		}
+
+		return array(
+			implode( ', ', array_map( static fn( string $key ): string => ':' . $key, array_keys( $params ) ) ),
+			$params,
+		);
+	}
+
+	/**
+	 * A list of row ids for an `IN ( … )`, written into the SQL.
+	 *
+	 * For ids that came out of an earlier query, where a placeholder per id
+	 * buys nothing and a long list runs into SQLite's parameter limit. Each
+	 * is cast to an integer here, which is what makes interpolating them
+	 * safe — whatever the caller passes, nothing but digits reaches SQL.
+	 * Duplicates are dropped; an empty list gives `IN ()`, which matches
+	 * nothing.
+	 *
+	 *   $db->all( 'SELECT * FROM items WHERE order_id IN ( ' . Database::ids( $orders ) . ' )' );
+	 *
+	 * @since 1.3.0
+	 *
+	 * @param array<int, int|string> $ids Row ids.
+	 *
+	 * @return string Comma-separated integers, or '' for none.
+	 */
+	public static function ids( array $ids ): string {
+		return implode( ',', array_values( array_unique( array_map( 'intval', $ids ) ) ) );
 	}
 
 	/**
@@ -651,6 +870,55 @@ final class Database {
 		}
 
 		return '"' . $name . '"';
+	}
+
+	/**
+	 * Whether an exception is a unique index refusing a duplicate.
+	 *
+	 * For the insert-and-catch pattern, where "already there" is an answer
+	 * and anything else is a failure. Matching the message for "UNIQUE" is
+	 * the usual way, and it also matches a table or column that happens to
+	 * have the word in its name. This reads SQLite's result code first.
+	 *
+	 * @since 1.3.0
+	 *
+	 * @param \Throwable $e Caught exception.
+	 *
+	 * @return bool
+	 */
+	public static function is_unique_violation( \Throwable $e ): bool {
+		if ( ! $e instanceof \PDOException ) {
+			return false;
+		}
+
+		// SQLITE_CONSTRAINT, then which constraint: a primary key on a rowid
+		// table reports itself as UNIQUE too.
+		return 19 === ( $e->errorInfo[1] ?? null )
+			&& str_starts_with( (string) ( $e->errorInfo[2] ?? '' ), 'UNIQUE constraint failed' );
+	}
+
+	/**
+	 * The INSERT statement for a row, with a named placeholder per column.
+	 *
+	 * @since 1.3.0
+	 *
+	 * @param string               $table Table name.
+	 * @param array<string, mixed> $data  Column => value.
+	 *
+	 * @return string
+	 *
+	 * @throws \InvalidArgumentException On an empty row or unsafe identifier.
+	 */
+	private static function insert_sql( string $table, array $data ): string {
+		if ( array() === $data ) {
+			throw new \InvalidArgumentException( 'Cannot insert an empty row.' );
+		}
+
+		$columns = array_keys( $data );
+
+		return 'INSERT INTO ' . self::identifier( $table )
+			. ' (' . implode( ', ', array_map( self::identifier( ... ), $columns ) ) . ')'
+			. ' VALUES (' . implode( ', ', array_map( static fn( string $c ): string => ':' . $c, $columns ) ) . ')';
 	}
 
 	/**

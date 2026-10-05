@@ -102,11 +102,63 @@ final readonly class Cache {
 	 * @return void
 	 */
 	public function put( string $key, string $value, int $ttl, ?int $now = null ): void {
-		$this->db->query(
-			"INSERT INTO {$this->name()} (cache_key, value, expires_at) VALUES (:k, :v, :e)
-			 ON CONFLICT (cache_key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at",
-			array( 'k' => $key, 'v' => $value, 'e' => ( $now ?? time() ) + $ttl )
+		$this->db->upsert(
+			$this->table,
+			array( 'cache_key' => $key, 'value' => $value, 'expires_at' => ( $now ?? time() ) + $ttl ),
+			array( 'cache_key' )
 		);
+	}
+
+	/**
+	 * Store a value only if there is not one already: the first caller wins.
+	 *
+	 * For a value that may be used once — a signature, a nonce, an
+	 * idempotency key — kept for as long as it could be presented again,
+	 * which is all the memory replay protection needs. One insert that the
+	 * key's uniqueness decides, so two requests racing with the same value
+	 * cannot both win; a get() then put() lets both through.
+	 *
+	 * An entry purge() would remove no longer counts, so a key can be used
+	 * again once its time is up rather than once housekeeping has run.
+	 *
+	 * @since 1.3.0
+	 *
+	 * @param string   $key   Key.
+	 * @param string   $value Value.
+	 * @param int      $ttl   Seconds it is kept.
+	 * @param int|null $now   Current time. For tests.
+	 *
+	 * @return bool True when this call stored it, false when it was there.
+	 */
+	#[\NoDiscard( 'False means the key was already taken: a replay, or a second request.' )]
+	public function add( string $key, string $value, int $ttl, ?int $now = null ): bool {
+		$now = $now ?? time();
+
+		$this->db->query( "DELETE FROM {$this->name()} WHERE cache_key = :k AND expires_at < :now", array( 'k' => $key, 'now' => $now ) );
+
+		return $this->db->insert_or_ignore( $this->table, array( 'cache_key' => $key, 'value' => $value, 'expires_at' => $now + $ttl ) );
+	}
+
+	/**
+	 * Make a value stale without losing it.
+	 *
+	 * The next remember() fetches again, and still has this to fall back on
+	 * if the fetch fails. forget() leaves nothing to fall back on, so a
+	 * "refresh" during an upstream outage empties whatever the value fed
+	 * until the outage ends.
+	 *
+	 * @since 1.3.0
+	 *
+	 * @param string   $key Key.
+	 * @param int|null $now Current time. For tests.
+	 *
+	 * @return bool Whether there was a value to expire.
+	 */
+	public function expire( string $key, ?int $now = null ): bool {
+		return $this->db->query(
+			"UPDATE {$this->name()} SET expires_at = MIN( expires_at, :now ) WHERE cache_key = :k",
+			array( 'k' => $key, 'now' => $now ?? time() )
+		)->rowCount() > 0;
 	}
 
 	/**
