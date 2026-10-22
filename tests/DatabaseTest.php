@@ -654,6 +654,46 @@ final class DatabaseTest extends TestCase {
 		$this->assertSame( 2, (int) $this->seeded()->value( 'SELECT COUNT(*) FROM products WHERE id IN ( ' . Database::ids( array( 1, 2 ) ) . ' )' ) );
 	}
 
+	/* ─── LIKE patterns (1.5.0) ─────────────────────────────────────── */
+
+	public function test_like_escapes_the_wildcards_and_the_escape(): void {
+		$this->assertSame( '%50\%%', Database::like( '50%' ) );
+		$this->assertSame( '%a\_b%', Database::like( 'a_b' ) );
+		$this->assertSame( '%c:\\\\x%', Database::like( 'c:\\x' ) );
+		$this->assertSame( 'ab%', Database::like( 'ab', 'starts' ) );
+		$this->assertSame( '%ab', Database::like( 'ab', 'ends' ) );
+		$this->assertSame( '%%', Database::like( '' ) );
+	}
+
+	public function test_a_typed_wildcard_matches_only_itself(): void {
+		$db = $this->db();
+
+		foreach ( array( '50% off', '50 off', 'a_b', 'axb', 'back\\slash', 'backslash', 'Plain' ) as $title ) {
+			$db->insert( 'products', array( 'title' => $title ) );
+		}
+
+		$find = static fn( string $q, string $position = 'contains' ): array => array_column(
+			$db->all( 'SELECT title FROM products WHERE title LIKE :q ' . Database::ESCAPE . ' ORDER BY id', array( 'q' => Database::like( $q, $position ) ) ),
+			'title'
+		);
+
+		$this->assertSame( array( '50% off' ), $find( '%' ) );
+		$this->assertSame( array( '50% off' ), $find( '50%' ) );
+		$this->assertSame( array( 'a_b' ), $find( '_' ) );
+		$this->assertSame( array( 'a_b' ), $find( 'a_b' ) );
+		$this->assertSame( array( 'back\\slash' ), $find( '\\' ) );
+		$this->assertSame( array( 'Plain' ), $find( 'plain' ), 'still case-insensitive for ASCII' );
+		$this->assertSame( array( '50% off', '50 off' ), $find( '50', 'starts' ) );
+		$this->assertSame( array( '50% off', '50 off' ), $find( 'off', 'ends' ) );
+		$this->assertCount( 7, $find( '' ) );
+	}
+
+	public function test_an_unknown_like_position_is_refused(): void {
+		$this->expectException( \InvalidArgumentException::class );
+
+		Database::like( 'x', 'middle' );
+	}
+
 	/* ─── Sweep (1.3.0) ─────────────────────────────────────────────── */
 
 	public function test_a_dry_sweep_counts_and_changes_nothing(): void {

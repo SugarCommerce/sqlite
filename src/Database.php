@@ -49,6 +49,16 @@ namespace SugarCommerce\Sqlite;
 final class Database {
 
 	/**
+	 * The clause that makes {@see like()}'s escapes count. Goes after every
+	 * `LIKE` it is used with: `title LIKE :q ` . Database::ESCAPE.
+	 *
+	 * @since 1.5.0
+	 *
+	 * @var string
+	 */
+	public const string ESCAPE = "ESCAPE '\\'";
+
+	/**
 	 * SQLite result codes meaning "try again": SQLITE_BUSY, SQLITE_LOCKED.
 	 *
 	 * @var list<int>
@@ -584,6 +594,37 @@ final class Database {
 			implode( ', ', array_map( static fn( string $key ): string => ':' . $key, array_keys( $params ) ) ),
 			$params,
 		);
+	}
+
+	/**
+	 * A search term as a `LIKE` pattern that matches it literally.
+	 *
+	 * A term bound straight into `'%' . $q . '%'` is a pattern, not text:
+	 * a `%` or `_` someone types becomes a wildcard, so searching `50%` or
+	 * `a_b` finds the wrong rows, and `%` alone finds every row. Each `\`,
+	 * `%` and `_` is escaped here; the `LIKE` needs {@see ESCAPE} after it
+	 * for the escapes to count.
+	 *
+	 *   $db->all( 'SELECT * FROM products WHERE title LIKE :q ' . Database::ESCAPE, [ 'q' => Database::like( $q ) ] );
+	 *
+	 * @since 1.5.0
+	 *
+	 * @param string $term     Text to look for, exactly as typed.
+	 * @param string $position Where it may appear: 'contains', 'starts' or 'ends'.
+	 *
+	 * @return string The pattern to bind.
+	 *
+	 * @throws \InvalidArgumentException On an unknown position.
+	 */
+	public static function like( string $term, string $position = 'contains' ): string {
+		$escaped = strtr( $term, array( '\\' => '\\\\', '%' => '\\%', '_' => '\\_' ) );
+
+		return match ( $position ) {
+			'contains' => '%' . $escaped . '%',
+			'starts'   => $escaped . '%',
+			'ends'     => '%' . $escaped,
+			default    => throw new \InvalidArgumentException( 'A LIKE position is contains, starts or ends, not ' . json_encode( $position ) . '.' ),
+		};
 	}
 
 	/**

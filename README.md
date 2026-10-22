@@ -221,6 +221,17 @@ $db->all( 'SELECT * FROM items WHERE order_id IN ( ' . Database::ids( $orders ) 
 
 An empty list gives `IN ()`, which SQLite accepts: nothing is in it, and everything is not in it. No sentinel `0` that might one day be a real id.
 
+## Searching
+
+A term bound as `'%' . $q . '%'` is a pattern, not text: a `%` or `_` someone types is a wildcard, so `%` alone finds every row. `like()` escapes them; `ESCAPE` makes the escapes count.
+
+```php
+$db->all( 'SELECT * FROM products WHERE title LIKE :q ' . Database::ESCAPE, [ 'q' => Database::like( $q ) ] );
+
+Database::like( $q, 'starts' );   // 'q%'
+Database::like( $q, 'ends' );     // '%q'
+```
+
 ## Housekeeping
 
 ```php
@@ -263,7 +274,7 @@ composer install
 composer test
 ```
 
-118 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical. Also covered: insert-or-ignore that still refuses a broken row, upserts on columns and on expressions, unique-violation detection, empty and hostile lists, dry-run sweeps, the cache's first-caller-wins `add()`, and backup rotation by name.
+121 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical. Also covered: insert-or-ignore that still refuses a broken row, upserts on columns and on expressions, unique-violation detection, empty and hostile lists, typed wildcards in searches, dry-run sweeps, the cache's first-caller-wins `add()`, and backup rotation by name.
 
 ## License
 
