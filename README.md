@@ -240,6 +240,23 @@ $db->decode( 'files', Database::from_json( ... ) );   // or decode it on every r
 
 `to_json()` keeps slashes and non-ASCII as written, keeps `1.0` a float, and stores broken UTF-8 with U+FFFD instead of returning false — which, bound into an INSERT, would have stored an empty string with no error.
 
+## Settings
+
+The values an operator changes from an admin page. The code holds every default; absent or blank falls back to it, so an empty table behaves as documented and clearing a field restores the default.
+
+```php
+$settings = new Settings( $db );                   // table: key, value, updated_at
+
+$settings->int( 'lookups_per_hour', 20 );          // not a whole number → the default
+$settings->string( 'site_name', 'Shop' );
+$settings->bool( 'maintenance', false );           // 1/true/yes/on, 0/false/no/off
+$settings->set( 'site_name', 'Shop & Co' );
+$settings->forget( 'site_name' );                  // back to the default
+$settings->all();                                  // key => value + updated_at, for the admin page
+```
+
+Read once per instance and cached; `set()`, `forget()` and `refresh()` drop the copy. A missing table reads as empty.
+
 ## Searching
 
 A term bound as `'%' . $q . '%'` is a pattern, not text: a `%` or `_` someone types is a wildcard, so `%` alone finds every row. `like()` escapes them; `ESCAPE` makes the escapes count.
@@ -293,7 +310,7 @@ composer install
 composer test
 ```
 
-129 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical. Also covered: insert-or-ignore that still refuses a broken row, upserts on columns and on expressions, unique-violation detection, empty and hostile lists, typed wildcards in searches, databases that must already exist, JSON columns, dry-run sweeps, the cache's first-caller-wins `add()`, and backup rotation by name.
+139 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical. Also covered: insert-or-ignore that still refuses a broken row, upserts on columns and on expressions, unique-violation detection, empty and hostile lists, typed wildcards in searches, databases that must already exist, JSON columns, settings and their defaults, dry-run sweeps, the cache's first-caller-wins `add()`, and backup rotation by name.
 
 ## License
 
