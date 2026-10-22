@@ -213,6 +213,7 @@ final class DatabaseTest extends TestCase {
 			'empty'      => array( '' ),
 			'leading digit' => array( '1table' ),
 			'hyphen'     => array( 'my-table' ),
+			'trailing newline' => array( "products\n" ),
 		);
 	}
 
@@ -343,6 +344,14 @@ final class DatabaseTest extends TestCase {
 		( new Config( journal_mode: 'WAL; DROP TABLE x' ) )->pragmas();
 	}
 
+	/**
+	 * `$` without `D` also matches before a final newline.
+	 */
+	public function test_a_pragma_value_with_a_trailing_newline_is_refused(): void {
+		$this->expectException( \InvalidArgumentException::class );
+		( new Config( journal_mode: "WAL\n" ) )->pragmas();
+	}
+
 	public function test_opening_an_unwritable_path_throws(): void {
 		$this->expectException( \RuntimeException::class );
 		Database::open( '/definitely/not/a/directory/db.sqlite' );
@@ -359,6 +368,46 @@ final class DatabaseTest extends TestCase {
 			$this->assertSame( 6, Database::open( $path )->count( 'products' ) );
 		} finally {
 			@unlink( $path );
+		}
+	}
+
+	/**
+	 * A copy of the database is the database: it must not take the umask.
+	 */
+	public function test_a_snapshot_is_owner_only(): void {
+		$path = sys_get_temp_dir() . '/snapshot-' . bin2hex( random_bytes( 4 ) ) . '.db';
+		$mask = umask( 0022 );
+
+		try {
+			$this->seeded()->snapshot( $path );
+			clearstatcache();
+
+			$this->assertSame( 0600, fileperms( $path ) & 0777 );
+			$this->assertSame( 6, Database::open( $path )->count( 'products' ) );
+		} finally {
+			umask( $mask );
+			@unlink( $path );
+		}
+	}
+
+	/**
+	 * A symlink planted where the snapshot goes must not be written through.
+	 */
+	public function test_a_snapshot_will_not_follow_a_symlink(): void {
+		$dir    = sys_get_temp_dir() . '/snapshot-link-' . bin2hex( random_bytes( 4 ) );
+		$target = $dir . '-elsewhere.db';
+		$link   = $dir . '.db';
+
+		symlink( $target, $link );
+
+		try {
+			$this->seeded()->snapshot( $link );
+			$this->fail( 'A snapshot was written through a symlink.' );
+		} catch ( \RuntimeException ) {
+			$this->assertFileDoesNotExist( $target );
+		} finally {
+			@unlink( $link );
+			@unlink( $target );
 		}
 	}
 
@@ -497,6 +546,21 @@ final class DatabaseTest extends TestCase {
 		$this->expectException( \InvalidArgumentException::class );
 
 		Database::memory( self::UNIQUE_SCHEMA )->upsert( 'notices', array( 'dedupe_key' => 'k' ), array( 'dedupe_key' ) );
+	}
+
+	/**
+	 * A column called `upsert_seats` owns the `:upsert_seats` placeholder,
+	 * so an update value for `seats` cannot quietly share it.
+	 */
+	public function test_an_upsert_value_cannot_share_a_columns_placeholder(): void {
+		$db = Database::memory( 'CREATE TABLE t ( k TEXT PRIMARY KEY, seats INTEGER, upsert_seats INTEGER )' );
+
+		try {
+			$db->upsert( 't', array( 'k' => 'a', 'seats' => 1, 'upsert_seats' => 7 ), array( 'k' ), array( 'seats' => 0 ) );
+			$this->fail( 'The update value was bound into the column.' );
+		} catch ( \InvalidArgumentException ) {
+			$this->assertSame( 0, $db->count( 't' ) );
+		}
 	}
 
 	public function test_an_upsert_validates_its_column_names(): void {

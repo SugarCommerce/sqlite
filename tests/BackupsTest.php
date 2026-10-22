@@ -124,6 +124,28 @@ final class BackupsTest extends TestCase {
 		new Backups( $this->db, $this->dir, '../app' );
 	}
 
+	public function test_a_prefix_with_a_trailing_newline_is_refused(): void {
+		$this->expectException( \InvalidArgumentException::class );
+
+		new Backups( $this->db, $this->dir, "app\n" );
+	}
+
+	/**
+	 * `app` must not count `app-staging` copies as its own, or pruning one
+	 * deletes the other's.
+	 */
+	public function test_pruning_leaves_a_longer_prefix_alone(): void {
+		$staging = new Backups( $this->db, $this->dir, 'app-staging', keep: 5 );
+		$app     = new Backups( $this->db, $this->dir, 'app', keep: 1 );
+
+		$kept = $staging->take( self::NOW );
+		$app->take( self::NOW + 60 );
+
+		$this->assertSame( 0, $app->prune() );
+		$this->assertFileExists( $kept );
+		$this->assertCount( 1, $app->copies() );
+	}
+
 	public function test_keeping_none_is_refused(): void {
 		$this->expectException( \InvalidArgumentException::class );
 

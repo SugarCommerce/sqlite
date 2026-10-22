@@ -197,6 +197,38 @@ final class MigratorTest extends TestCase {
 		$this->assertTrue( $db->schema()->has_table( 'schema_versions' ) );
 	}
 
+	/**
+	 * Two deploys running together: by the time this runner holds the lock,
+	 * the other has applied the migration. It is skipped, not run again and
+	 * failed on its record.
+	 */
+	public function test_a_migration_another_runner_applied_meanwhile_is_skipped(): void {
+		$db  = $this->db();
+		$ran = 0;
+
+		$migrator = ( new Migrator( $db ) )
+			->add( 'first', static function ( Database $db ): void {
+				$db->insert( 'migrations', array( 'name' => 'second' ) );
+			} )
+			->add( 'second', static function () use ( &$ran ): void {
+				++$ran;
+			} );
+
+		$this->assertSame( array( 'first' ), $migrator->run() );
+		$this->assertSame( 0, $ran );
+		$this->assertSame( array(), $migrator->pending() );
+	}
+
+	/**
+	 * `_` is a LIKE wildcard: `sqlite_%` unescaped hides `sqlitebackup` too.
+	 */
+	public function test_a_table_whose_name_merely_starts_sqlite_is_listed(): void {
+		$db = $this->db();
+		$db->pdo()->exec( 'CREATE TABLE sqlitebackup ( id INTEGER PRIMARY KEY )' );
+
+		$this->assertContains( 'sqlitebackup', $db->schema()->tables() );
+	}
+
 	public function test_an_unsafe_tracking_table_name_is_refused(): void {
 		$this->expectException( \InvalidArgumentException::class );
 

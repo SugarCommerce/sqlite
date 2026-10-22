@@ -42,6 +42,8 @@ namespace SugarCommerce\Sqlite;
 final readonly class Backups {
 
 	/**
+	 * Point at a directory of copies.
+	 *
 	 * @since 1.3.0
 	 *
 	 * @param Database $db     Connection to copy.
@@ -60,7 +62,7 @@ final readonly class Backups {
 		private string $prefix = 'backup',
 		public int $keep = 14,
 	) {
-		if ( 1 !== preg_match( '/^[A-Za-z0-9_-]+$/', $prefix ) ) {
+		if ( 1 !== preg_match( '/^[A-Za-z0-9_-]+$/D', $prefix ) ) {
 			throw new \InvalidArgumentException( 'A backup prefix is letters, digits, _ and - only: ' . $prefix );
 		}
 
@@ -130,15 +132,29 @@ final readonly class Backups {
 	 *
 	 * The name sorts by time, so the name is the order.
 	 *
+	 * Only a name take() could have written counts: the prefix, a dash and
+	 * the time. A looser match counts other files as copies — another
+	 * Backups with the prefix `app-staging` sharing the directory with
+	 * `app`, say — and prune() deletes them. The directory is read rather
+	 * than globbed, so a `[` or `*` in its path is not a pattern.
+	 *
 	 * @since 1.3.0
 	 *
-	 * @return string[] Paths.
+	 * @return list<string> Paths.
 	 */
 	public function copies(): array {
-		$copies = glob( $this->dir . '/' . $this->prefix . '-*.db' ) ?: array();
+		$names = is_dir( $this->dir ) ? scandir( $this->dir ) : false;
+		$name  = '/^' . preg_quote( $this->prefix, '/' ) . '-[0-9]{8}-[0-9]{6}\.db$/D';
+		$found = array();
 
-		rsort( $copies );
+		foreach ( $names ?: array() as $entry ) {
+			if ( 1 === preg_match( $name, $entry ) && is_file( $this->dir . '/' . $entry ) ) {
+				$found[] = $this->dir . '/' . $entry;
+			}
+		}
 
-		return $copies;
+		rsort( $found );
+
+		return $found;
 	}
 }

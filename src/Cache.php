@@ -41,6 +41,8 @@ final readonly class Cache {
 	 * The table this class expects, for a schema file or a migration.
 	 *
 	 * @since 1.1.0
+	 *
+	 * @var string
 	 */
 	public const SCHEMA = 'CREATE TABLE IF NOT EXISTS cache (
 	cache_key  TEXT    PRIMARY KEY,
@@ -49,6 +51,8 @@ final readonly class Cache {
 )';
 
 	/**
+	 * Use a table on a connection.
+	 *
 	 * @since 1.1.0
 	 *
 	 * @param Database $db    Connection.
@@ -169,7 +173,7 @@ final readonly class Cache {
 	 *
 	 * @param string                  $key   Key.
 	 * @param int                     $ttl   Seconds a fetched value stays fresh.
-	 * @param \Closure(): string|null $fetch Fetches the value. Null means the
+	 * @param \Closure(): ?string      $fetch Fetches the value. Null means the
 	 *                                       source could not be asked, and
 	 *                                       is not stored.
 	 * @param int|null                $now   Current time. For tests.
@@ -221,15 +225,17 @@ final readonly class Cache {
 	public function purge( ?int $now = null, bool $dry = false ): int {
 		$params = array( 'now' => $now ?? time() );
 
-		return $dry
-			? (int) $this->db->value( "SELECT COUNT(*) FROM {$this->name()} WHERE expires_at < :now", $params )
-			: $this->db->query( "DELETE FROM {$this->name()} WHERE expires_at < :now", $params )->rowCount();
+		return $this->db->sweep( $this->table, 'expires_at < :now', $params, dry: $dry );
 	}
 
 	/**
 	 * The table name, quoted.
 	 *
+	 * @since 1.1.0
+	 *
 	 * @return string
+	 *
+	 * @throws \InvalidArgumentException When the name is not a bare identifier.
 	 */
 	private function name(): string {
 		return Database::identifier( $this->table );
@@ -238,11 +244,20 @@ final readonly class Cache {
 	/**
 	 * A stored value as a string, or null.
 	 *
+	 * The column is TEXT, so anything else came from outside this class;
+	 * a number is given back as its digits, anything stranger as nothing.
+	 *
+	 * @since 1.1.0
+	 *
 	 * @param mixed $value What the query returned.
 	 *
 	 * @return string|null
 	 */
 	private static function text( mixed $value ): ?string {
-		return null === $value ? null : (string) $value;
+		return match ( true ) {
+			is_string( $value )                    => $value,
+			is_int( $value ) || is_float( $value ) => (string) $value,
+			default                                => null,
+		};
 	}
 }

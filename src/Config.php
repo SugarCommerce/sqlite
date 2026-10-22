@@ -27,6 +27,8 @@ namespace SugarCommerce\Sqlite;
 final readonly class Config {
 
 	/**
+	 * Choose the pragmas; every default is the production one.
+	 *
 	 * @since 1.0.0
 	 *
 	 * @param string $journal_mode    `WAL` unless you have a reason. WAL
@@ -117,7 +119,7 @@ final readonly class Config {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @return string[]
+	 * @return list<string>
 	 */
 	public function pragmas(): array {
 		$pragmas = array(
@@ -152,7 +154,7 @@ final readonly class Config {
 	 * @throws \InvalidArgumentException When it is not a bare word.
 	 */
 	private static function word( string $value ): string {
-		if ( 1 !== preg_match( '/^[A-Za-z_]+$/', $value ) ) {
+		if ( 1 !== preg_match( '/^[A-Za-z_]+$/D', $value ) ) {
 			throw new \InvalidArgumentException( 'Pragma value must be a bare keyword, got: ' . $value );
 		}
 

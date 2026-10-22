@@ -49,12 +49,16 @@ namespace SugarCommerce\Sqlite;
 final class Database {
 
 	/**
-	 * SQLite result codes meaning "try again".
+	 * SQLite result codes meaning "try again": SQLITE_BUSY, SQLITE_LOCKED.
+	 *
+	 * @var list<int>
 	 */
-	private const array RETRYABLE = array( 5, 6 );   // SQLITE_BUSY, SQLITE_LOCKED
+	private const array RETRYABLE = array( 5, 6 );
 
 	/**
 	 * Valid `wal_checkpoint` modes.
+	 *
+	 * @var list<string>
 	 */
 	private const array CHECKPOINT_MODES = array( 'PASSIVE', 'FULL', 'RESTART', 'TRUNCATE' );
 
@@ -66,6 +70,8 @@ final class Database {
 	private array $decoders = array();
 
 	/**
+	 * Wrap a connection that open() has configured.
+	 *
 	 * @since 1.0.0
 	 *
 	 * @param \PDO   $pdo    Configured connection.
@@ -176,8 +182,9 @@ final class Database {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param string               $sql    SQL with named or positional placeholders.
-	 * @param array<string, mixed> $params Values, bound by PHP type.
+	 * @param string                   $sql    SQL with named or positional placeholders.
+	 * @param array<int|string, mixed> $params Values, bound by PHP type: by
+	 *                                         name, or by position from 0.
 	 *
 	 * @return \PDOStatement
 	 */
@@ -194,14 +201,15 @@ final class Database {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param string               $sql    Query.
-	 * @param array<string, mixed> $params Values.
+	 * @param string                   $sql    Query.
+	 * @param array<int|string, mixed> $params Values.
 	 *
 	 * @return array<int, array<string, mixed>>
 	 */
 	public function all( string $sql, array $params = array() ): array {
 		$rows = $this->query( $sql, $params )->fetchAll();
 
+		// @phpstan-ignore return.type, argument.type (FETCH_ASSOC, set in open(), makes every row an array keyed by column name.)
 		return $this->decoders ? array_map( $this->decoded( ... ), $rows ) : $rows;
 	}
 
@@ -210,15 +218,16 @@ final class Database {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param string               $sql    Query.
-	 * @param array<string, mixed> $params Values.
+	 * @param string                   $sql    Query.
+	 * @param array<int|string, mixed> $params Values.
 	 *
 	 * @return array<string, mixed>|null
 	 */
 	public function row( string $sql, array $params = array() ): ?array {
 		$row = $this->query( $sql, $params )->fetch();
 
-		return false === $row ? null : $this->decoded( $row );
+		// @phpstan-ignore argument.type (FETCH_ASSOC, set in open(), makes a row an array keyed by column name.)
+		return is_array( $row ) ? $this->decoded( $row ) : null;
 	}
 
 	/**
@@ -251,6 +260,8 @@ final class Database {
 	/**
 	 * A row with its decoded columns decoded.
 	 *
+	 * @since 1.2.0
+	 *
 	 * @param array<string, mixed> $row Fetched row.
 	 *
 	 * @return array<string, mixed>
@@ -270,9 +281,9 @@ final class Database {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param string               $sql     Query.
-	 * @param array<string, mixed> $params  Values.
-	 * @param mixed                $default Returned when there is no row.
+	 * @param string                   $sql     Query.
+	 * @param array<int|string, mixed> $params  Values.
+	 * @param mixed                    $default Returned when there is no row.
 	 *
 	 * @return mixed
 	 */
@@ -287,13 +298,13 @@ final class Database {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param string               $sql    Query.
-	 * @param array<string, mixed> $params Values.
+	 * @param string                   $sql    Query.
+	 * @param array<int|string, mixed> $params Values.
 	 *
-	 * @return array<int, mixed>
+	 * @return list<mixed>
 	 */
 	public function column( string $sql, array $params = array() ): array {
-		return $this->query( $sql, $params )->fetchAll( \PDO::FETCH_COLUMN );
+		return array_values( $this->query( $sql, $params )->fetchAll( \PDO::FETCH_COLUMN ) );
 	}
 
 	/* ─── Writing ───────────────────────────────────────────────────── */
@@ -375,7 +386,9 @@ final class Database {
 	 * @return int Rows written: 1 whether inserted or updated.
 	 *
 	 * @throws \InvalidArgumentException On an empty row, an unsafe
-	 *                                   identifier, or nothing to update.
+	 *                                   identifier, nothing to update, or
+	 *                                   an update value whose placeholder
+	 *                                   would collide with a column's.
 	 */
 	public function upsert( string $table, array $data, array|string $conflict, ?array $update = null ): int {
 		if ( null === $update ) {
@@ -396,8 +409,18 @@ final class Database {
 
 		foreach ( $update as $key => $value ) {
 			if ( is_int( $key ) ) {
-				$sets[] = self::identifier( (string) $value ) . ' = excluded.' . self::identifier( (string) $value );
+				if ( ! is_string( $value ) ) {
+					throw new \InvalidArgumentException( 'A column to update is named by a string, got ' . get_debug_type( $value ) . '.' );
+				}
+
+				$sets[] = self::identifier( $value ) . ' = excluded.' . self::identifier( $value );
 				continue;
+			}
+
+			// A column really called `upsert_total` already owns that
+			// placeholder; sharing it would write one value into both.
+			if ( array_key_exists( 'upsert_' . $key, $params ) ) {
+				throw new \InvalidArgumentException( 'The update value for "' . $key . '" would share a placeholder with the column "upsert_' . $key . '".' );
 			}
 
 			$sets[]                     = self::identifier( $key ) . ' = :upsert_' . $key;
@@ -510,7 +533,7 @@ final class Database {
 		$table = self::identifier( $table );
 
 		if ( $dry ) {
-			return (int) $this->value( "SELECT COUNT(*) FROM {$table} WHERE {$where}", $params, 0 );
+			return self::whole( $this->value( "SELECT COUNT(*) FROM {$table} WHERE {$where}", $params, 0 ) );
 		}
 
 		$sql = null === $set
@@ -599,12 +622,12 @@ final class Database {
 		$sql = 'SELECT COUNT(*) FROM ' . self::identifier( $table );
 
 		if ( array() === $where ) {
-			return (int) $this->value( $sql, array(), 0 );
+			return self::whole( $this->value( $sql, array(), 0 ) );
 		}
 
 		[ $clause, $params ] = self::where( $where );
 
-		return (int) $this->value( $sql . ' WHERE ' . $clause, $params, 0 );
+		return self::whole( $this->value( $sql . ' WHERE ' . $clause, $params, 0 ) );
 	}
 
 	/**
@@ -649,7 +672,7 @@ final class Database {
 	 */
 	public function transaction( callable $work, int $retries = 3 ): mixed {
 		// Already inside one — just run, so the outer commit is atomic.
-		if ( $this->pdo->inTransaction() ) {
+		if ( $this->in_transaction() ) {
 			return $work( $this );
 		}
 
@@ -674,7 +697,7 @@ final class Database {
 
 				return $result;
 			} catch ( \Throwable $e ) {
-				if ( $this->pdo->inTransaction() ) {
+				if ( $this->in_transaction() ) {
 					$this->pdo->exec( 'ROLLBACK' );
 				}
 
@@ -704,7 +727,7 @@ final class Database {
 	 * @throws \Throwable Anything the closure throws.
 	 */
 	public function read_transaction( callable $work ): mixed {
-		if ( $this->pdo->inTransaction() ) {
+		if ( $this->in_transaction() ) {
 			return $work( $this );
 		}
 
@@ -716,7 +739,7 @@ final class Database {
 
 			return $result;
 		} catch ( \Throwable $e ) {
-			if ( $this->pdo->inTransaction() ) {
+			if ( $this->in_transaction() ) {
 				$this->pdo->exec( 'ROLLBACK' );
 			}
 
@@ -769,9 +792,13 @@ final class Database {
 	 * @return true|string True when sound, otherwise the reported problem.
 	 */
 	public function integrity_check(): true|string {
-		$result = (string) $this->pdo->query( 'PRAGMA integrity_check' )->fetchColumn();
+		$result = $this->value( 'PRAGMA integrity_check' );
 
-		return 'ok' === $result ? true : $result;
+		if ( 'ok' === $result ) {
+			return true;
+		}
+
+		return is_string( $result ) ? $result : 'integrity_check returned nothing';
 	}
 
 	/**
@@ -781,22 +808,47 @@ final class Database {
 	 * snapshot, safe against a live WAL database, where `cp` can catch the
 	 * file and its `-wal` at different moments. The copy is also compacted.
 	 *
+	 * The file is created here first, empty and readable by its owner only,
+	 * which SQLite then writes into. Left to SQLite it would take the
+	 * process umask — usually world-readable — and a copy of the database
+	 * is the database. Creating it exclusively also means a file, or a
+	 * symlink planted at the path, is refused rather than written through.
+	 *
 	 * @since 1.1.0
 	 *
 	 * @param string $path Where the copy goes. Must not exist yet.
 	 *
 	 * @return void
 	 *
-	 * @throws \RuntimeException When the file already exists — SQLite would
-	 *                           refuse anyway, less clearly.
+	 * @throws \RuntimeException When the path already exists — SQLite would
+	 *                           refuse anyway, less clearly — or cannot be
+	 *                           created.
 	 */
 	public function snapshot( string $path ): void {
-		if ( file_exists( $path ) ) {
+		if ( file_exists( $path ) || is_link( $path ) ) {
 			throw new \RuntimeException( 'A snapshot will not overwrite ' . $path );
 		}
 
-		// Bound, not interpolated: it is still a string reaching SQL.
-		$this->query( 'VACUUM INTO :path', array( 'path' => $path ) );
+		$handle = @fopen( $path, 'x' );
+
+		if ( false === $handle ) {
+			throw new \RuntimeException( 'Cannot create a snapshot at ' . $path );
+		}
+
+		fclose( $handle );
+
+		try {
+			if ( ! chmod( $path, 0600 ) ) {
+				throw new \RuntimeException( 'Cannot make the snapshot at ' . $path . ' owner-only.' );
+			}
+
+			// Bound, not interpolated: it is still a string reaching SQL.
+			$this->query( 'VACUUM INTO :path', array( 'path' => $path ) );
+		} catch ( \Throwable $e ) {
+			@unlink( $path );
+
+			throw $e;
+		}
 	}
 
 	/**
@@ -822,8 +874,9 @@ final class Database {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param \PDOStatement        $stmt   Prepared statement.
-	 * @param array<string, mixed> $params Placeholder => value.
+	 * @param \PDOStatement            $stmt   Prepared statement.
+	 * @param array<int|string, mixed> $params Placeholder => value; an int key
+	 *                                         is a 0-based position.
 	 *
 	 * @return void
 	 *
@@ -854,7 +907,8 @@ final class Database {
 	 * Table and column names cannot be bound as parameters, so they are
 	 * interpolated. Validating rather than escaping keeps the rule easy
 	 * to reason about: if it is not `[A-Za-z_][A-Za-z0-9_]*`, it does not
-	 * go into SQL.
+	 * go into SQL. Matched to the very end of the string — `$` alone would
+	 * also accept a name with a newline after it.
 	 *
 	 * @since 1.0.0
 	 *
@@ -865,7 +919,7 @@ final class Database {
 	 * @throws \InvalidArgumentException When the name is not a bare identifier.
 	 */
 	public static function identifier( string $name ): string {
-		if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/', $name ) ) {
+		if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $name ) ) {
 			throw new \InvalidArgumentException( 'Unsafe SQL identifier: ' . $name );
 		}
 
@@ -893,8 +947,11 @@ final class Database {
 
 		// SQLITE_CONSTRAINT, then which constraint: a primary key on a rowid
 		// table reports itself as UNIQUE too.
+		$message = $e->errorInfo[2] ?? null;
+
 		return 19 === ( $e->errorInfo[1] ?? null )
-			&& str_starts_with( (string) ( $e->errorInfo[2] ?? '' ), 'UNIQUE constraint failed' );
+			&& is_string( $message )
+			&& str_starts_with( $message, 'UNIQUE constraint failed' );
 	}
 
 	/**
@@ -947,6 +1004,39 @@ final class Database {
 		}
 
 		return array( implode( ' AND ', $clauses ), $params );
+	}
+
+	/**
+	 * Whether a transaction is open on the connection right now.
+	 *
+	 * Asked afresh every time: a failed COMMIT may or may not have ended the
+	 * transaction, so the answer from before it means nothing.
+	 *
+	 * @since 1.4.0
+	 *
+	 * @phpstan-impure
+	 *
+	 * @return bool
+	 */
+	private function in_transaction(): bool {
+		return $this->pdo->inTransaction();
+	}
+
+	/**
+	 * A count read back from SQLite, as an int.
+	 *
+	 * @since 1.4.0
+	 *
+	 * @param mixed $value What the query returned.
+	 *
+	 * @return int Zero for anything that is not a number.
+	 */
+	private static function whole( mixed $value ): int {
+		return match ( true ) {
+			is_int( $value )     => $value,
+			is_numeric( $value ) => (int) $value,
+			default              => 0,
+		};
 	}
 
 	/**

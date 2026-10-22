@@ -34,6 +34,8 @@ final class Schema {
 	private array $cache = array();
 
 	/**
+	 * Inspect a connection.
+	 *
 	 * @since 1.0.0
 	 *
 	 * @param Database $db Connection to inspect.
@@ -45,13 +47,12 @@ final class Schema {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @return string[]
+	 * @return list<string>
 	 */
 	public function tables(): array {
-		return array_map(
-			'strval',
+		return self::names(
 			$this->db->column(
-				"SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+				"SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name"
 			)
 		);
 	}
@@ -66,11 +67,7 @@ final class Schema {
 	 * @return bool
 	 */
 	public function has_table( string $table ): bool {
-		return (int) $this->db->value(
-			"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = :name",
-			array( 'name' => $table ),
-			0
-		) > 0;
+		return $this->db->exists( 'sqlite_master', array( 'type' => 'table', 'name' => $table ) );
 	}
 
 	/**
@@ -80,10 +77,10 @@ final class Schema {
 	 *
 	 * @param string $table Table name.
 	 *
-	 * @return string[] Empty when the table does not exist.
+	 * @return list<string> Empty when the table does not exist.
 	 */
 	public function columns( string $table ): array {
-		return array_map( 'strval', array_column( $this->table_info( $table ), 'name' ) );
+		return self::names( array_column( $this->table_info( $table ), 'name' ) );
 	}
 
 	/**
@@ -111,6 +108,8 @@ final class Schema {
 	 * @param string $table Table name.
 	 *
 	 * @return array<int, array<string, mixed>> `PRAGMA table_info` rows.
+	 *
+	 * @throws \InvalidArgumentException When the name is not a bare identifier.
 	 */
 	public function table_info( string $table ): array {
 		if ( ! isset( $this->cache[ $table ] ) ) {
@@ -131,13 +130,12 @@ final class Schema {
 	 *
 	 * @param string $table Table name.
 	 *
-	 * @return string[]
+	 * @return list<string>
 	 */
 	public function indexes( string $table ): array {
-		return array_map(
-			'strval',
+		return self::names(
 			$this->db->column(
-				"SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = :table AND name NOT LIKE 'sqlite_%'",
+				"SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = :table AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
 				array( 'table' => $table )
 			)
 		);
@@ -153,11 +151,7 @@ final class Schema {
 	 * @return bool
 	 */
 	public function has_index( string $name ): bool {
-		return (int) $this->db->value(
-			"SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = :name",
-			array( 'name' => $name ),
-			0
-		) > 0;
+		return $this->db->exists( 'sqlite_master', array( 'type' => 'index', 'name' => $name ) );
 	}
 
 	/**
@@ -170,9 +164,12 @@ final class Schema {
 	 * @param string $table      Table name.
 	 * @param string $column     Column name.
 	 * @param string $definition SQL type and constraints, e.g.
-	 *                           `TEXT NOT NULL DEFAULT ''`.
+	 *                           `TEXT NOT NULL DEFAULT ''`. Interpolated as
+	 *                           it is: write it in code, never from input.
 	 *
 	 * @return bool True when the column was added, false when it existed.
+	 *
+	 * @throws \InvalidArgumentException When a name is not a bare identifier.
 	 */
 	public function add_column( string $table, string $column, string $definition ): bool {
 		if ( $this->has_column( $table, $column ) ) {
@@ -206,5 +203,18 @@ final class Schema {
 		}
 
 		unset( $this->cache[ $table ] );
+	}
+
+	/**
+	 * The names in a column of results.
+	 *
+	 * @since 1.4.0
+	 *
+	 * @param array<mixed> $values What the query returned.
+	 *
+	 * @return list<string>
+	 */
+	private static function names( array $values ): array {
+		return array_values( array_filter( $values, is_string( ... ) ) );
 	}
 }

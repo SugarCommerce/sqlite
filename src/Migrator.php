@@ -40,15 +40,21 @@ final class Migrator {
 	/**
 	 * Registered migrations, in registration order.
 	 *
-	 * @var array<string, callable>
+	 * @var array<string, callable(Database, Schema): void>
 	 */
 	private array $migrations = array();
 
 	/**
+	 * Use a connection, creating the record of applied migrations if it is
+	 * not there yet.
+	 *
 	 * @since 1.0.0
 	 *
 	 * @param Database $db    Connection to migrate.
 	 * @param string   $table Where applied migrations are recorded.
+	 *
+	 * @throws \InvalidArgumentException When the table name is not a bare
+	 *                                   identifier.
 	 */
 	public function __construct(
 		private readonly Database $db,
@@ -70,10 +76,10 @@ final class Migrator {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @param string                            $name Stable identifier.
-	 *                                                Renaming one makes it
-	 *                                                run again.
-	 * @param callable(Database, Schema): void  $work Migration body.
+	 * @param string                           $name Stable identifier.
+	 *                                               Renaming one makes it
+	 *                                               run again.
+	 * @param callable(Database, Schema): void $work Migration body.
 	 *
 	 * @return self For chaining.
 	 *
@@ -96,9 +102,16 @@ final class Migrator {
 	/**
 	 * Apply everything outstanding.
 	 *
+	 * Whether a migration has run is asked again inside its transaction,
+	 * once the write lock is held. Two deploys starting together both see
+	 * it outstanding; the second waits for the lock, then finds it recorded
+	 * and skips it, rather than running the body a second time and failing
+	 * on the record.
+	 *
 	 * @since 1.0.0
 	 *
-	 * @return string[] Names applied, in the order they ran.
+	 * @return list<string> Names applied, in the order they ran — by this
+	 *                      call, not by another runner it raced.
 	 *
 	 * @throws \RuntimeException When a migration fails, naming it.
 	 */
@@ -113,9 +126,15 @@ final class Migrator {
 			}
 
 			try {
-				$this->db->transaction( function ( Database $db ) use ( $name, $work, $schema ): void {
+				$ran = $this->db->transaction( function ( Database $db ) use ( $name, $work, $schema ): bool {
+					if ( $db->exists( $this->table, array( 'name' => $name ) ) ) {
+						return false;
+					}
+
 					$work( $db, $schema );
 					$db->insert( $this->table, array( 'name' => $name ) );
+
+					return true;
 				} );
 			} catch ( \Throwable $e ) {
 				throw new \RuntimeException(
@@ -126,7 +145,10 @@ final class Migrator {
 			}
 
 			$schema->forget();
-			$applied[] = $name;
+
+			if ( true === $ran ) {
+				$applied[] = $name;
+			}
 		}
 
 		return $applied;
@@ -137,12 +159,14 @@ final class Migrator {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @return string[]
+	 * @return list<string>
 	 */
 	public function applied(): array {
-		return array_map(
-			'strval',
-			$this->db->column( 'SELECT name FROM ' . Database::identifier( $this->table ) )
+		return array_values(
+			array_filter(
+				$this->db->column( 'SELECT name FROM ' . Database::identifier( $this->table ) ),
+				is_string( ... )
+			)
 		);
 	}
 
@@ -151,7 +175,7 @@ final class Migrator {
 	 *
 	 * @since 1.0.0
 	 *
-	 * @return string[]
+	 * @return list<string>
 	 */
 	public function pending(): array {
 		return array_values( array_diff( array_keys( $this->migrations ), $this->applied() ) );

@@ -254,7 +254,7 @@ $backups->prune();            // all but the newest 14
 $backups->newest();           // when the last one was written, for a health check
 ```
 
-Pruned by name, which is the time the copy was taken, not by modification time — touching an old copy to look at it does not make a newer one the one that goes. The directory is created owner-only: a copy of the database is the database. Getting a copy off the box is yours: `take()` returns the path.
+Pruned by name, which is the time the copy was taken, not by modification time — touching an old copy to look at it does not make a newer one the one that goes. The directory is created owner-only, and every snapshot file is created `0600` whatever the umask, refusing a file or symlink already at the path: a copy of the database is the database. Only names `take()` could have written count as copies, so a second prefix such as `app-staging` in the same directory is never pruned by `app`. Getting a copy off the box is yours: `take()` returns the path.
 
 ## Testing
 
@@ -263,7 +263,7 @@ composer install
 composer test
 ```
 
-109 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical. Also covered: insert-or-ignore that still refuses a broken row, upserts on columns and on expressions, unique-violation detection, empty and hostile lists, dry-run sweeps, the cache's first-caller-wins `add()`, and backup rotation by name.
+118 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical. Also covered: insert-or-ignore that still refuses a broken row, upserts on columns and on expressions, unique-violation detection, empty and hostile lists, dry-run sweeps, the cache's first-caller-wins `add()`, and backup rotation by name.
 
 ## License
 
