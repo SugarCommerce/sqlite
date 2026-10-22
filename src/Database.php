@@ -110,10 +110,68 @@ final class Database {
 	 * @throws \RuntimeException When the file cannot be opened.
 	 */
 	public static function open( string $path, ?Config $config = null ): self {
-		$config ??= Config::production();
+		return self::connect( $path, $config ?? Config::production(), array() );
+	}
 
+	/**
+	 * Open a database that has to be there already.
+	 *
+	 * `open()` on a path that is wrong — a typo in .env, a deploy that
+	 * skipped the upload — makes a new empty file and carries on, and the
+	 * first anyone hears of it is "no such table" on the first query, or a
+	 * site that runs with no data. This refuses instead: a missing file, an
+	 * empty one, or (given $table) one without that table each throw, with
+	 * the path in the message. The file is opened read-write but never
+	 * created, so nothing is left behind by a failed attempt.
+	 *
+	 *   $db = Database::existing( $path, Config::durable(), 'settings' );
+	 *
+	 * @since 1.6.0
+	 *
+	 * @param string      $path   Filesystem path.
+	 * @param Config|null $config Pragmas. Null uses {@see Config::production()}.
+	 * @param string      $table  A table the database must have, or '' for
+	 *                            no check.
+	 *
+	 * @return self
+	 *
+	 * @throws \RuntimeException When the file is missing, empty, cannot be
+	 *                           opened, or lacks $table.
+	 */
+	public static function existing( string $path, ?Config $config = null, string $table = '' ): self {
+		if ( ! is_file( $path ) ) {
+			throw new \RuntimeException( 'No SQLite database at "' . $path . '".' );
+		}
+
+		if ( 0 === filesize( $path ) ) {
+			throw new \RuntimeException( 'The SQLite database at "' . $path . '" is empty (zero bytes).' );
+		}
+
+		$db = self::connect( $path, $config ?? Config::production(), array( \Pdo\Sqlite::ATTR_OPEN_FLAGS => \Pdo\Sqlite::OPEN_READWRITE ) );
+
+		if ( '' !== $table && ! $db->schema()->has_table( $table ) ) {
+			throw new \RuntimeException( 'The SQLite database at "' . $path . '" has no "' . $table . '" table.' );
+		}
+
+		return $db;
+	}
+
+	/**
+	 * Connect, set the attributes every query here relies on, apply pragmas.
+	 *
+	 * @since 1.6.0
+	 *
+	 * @param string           $path    Filesystem path.
+	 * @param Config           $config  Pragmas.
+	 * @param array<int, int>  $options PDO constructor options.
+	 *
+	 * @return self
+	 *
+	 * @throws \RuntimeException When the file cannot be opened.
+	 */
+	private static function connect( string $path, Config $config, array $options ): self {
 		try {
-			$pdo = new \PDO( 'sqlite:' . $path );
+			$pdo = new \PDO( 'sqlite:' . $path, null, null, $options );
 		} catch ( \PDOException $e ) {
 			throw new \RuntimeException( 'Could not open SQLite database at "' . $path . '": ' . $e->getMessage(), 0, $e );
 		}
@@ -594,6 +652,66 @@ final class Database {
 			implode( ', ', array_map( static fn( string $key ): string => ':' . $key, array_keys( $params ) ) ),
 			$params,
 		);
+	}
+
+	/**
+	 * A value as JSON for a TEXT column.
+	 *
+	 * One set of flags for everything an application stores: slashes and
+	 * non-ASCII kept as they are (readable in the database, and shorter),
+	 * 1.0 kept a float, and a string with broken UTF-8 stored with U+FFFD in
+	 * place of the bad bytes rather than json_encode() returning false — a
+	 * false that, bound into an INSERT, becomes an empty string with no
+	 * error. Null stays NULL.
+	 *
+	 *   $db->insert( 'audit', [ 'details' => Database::to_json( $details, null_if_empty: true ) ] );
+	 *
+	 * @since 1.6.0
+	 *
+	 * @param mixed $value         Anything json_encode() accepts.
+	 * @param bool  $null_if_empty Store an empty array or '' as NULL.
+	 *
+	 * @return string|null
+	 *
+	 * @throws \JsonException On a value that cannot be JSON at all (INF,
+	 *                        NAN, nesting past 512).
+	 */
+	public static function to_json( mixed $value, bool $null_if_empty = false ): ?string {
+		if ( null === $value || ( $null_if_empty && ( array() === $value || '' === $value ) ) ) {
+			return null;
+		}
+
+		return json_encode( $value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR );
+	}
+
+	/**
+	 * A JSON TEXT column back as an array.
+	 *
+	 * NULL, '', JSON that does not parse, and JSON that is not an object or
+	 * a list all come back as an empty array — the column is read to be
+	 * iterated, and a stray scalar or a corrupt row should not take the page
+	 * down with it. Usable as a {@see decode()} decoder:
+	 *
+	 *   $db->decode( 'file_paths', Database::from_json( ... ) );
+	 *
+	 * @since 1.6.0
+	 *
+	 * @param mixed $stored The column's value.
+	 *
+	 * @return array<mixed>
+	 */
+	public static function from_json( mixed $stored ): array {
+		if ( ! is_string( $stored ) || '' === $stored ) {
+			return array();
+		}
+
+		try {
+			$value = json_decode( $stored, true, 512, JSON_THROW_ON_ERROR );
+		} catch ( \JsonException ) {
+			return array();
+		}
+
+		return is_array( $value ) ? $value : array();
 	}
 
 	/**

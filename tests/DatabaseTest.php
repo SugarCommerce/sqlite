@@ -694,6 +694,91 @@ final class DatabaseTest extends TestCase {
 		Database::like( 'x', 'middle' );
 	}
 
+	/* ─── Existing databases (1.6.0) ────────────────────────────────── */
+
+	private function scratch(): string {
+		$dir = sys_get_temp_dir() . '/sqlite-existing-' . bin2hex( random_bytes( 4 ) );
+		mkdir( $dir );
+
+		return $dir;
+	}
+
+	public function test_existing_refuses_a_missing_file_and_creates_nothing(): void {
+		$path = $this->scratch() . '/nope.db';
+
+		try {
+			Database::existing( $path );
+			$this->fail( 'expected a refusal' );
+		} catch ( \RuntimeException $e ) {
+			$this->assertStringContainsString( $path, $e->getMessage() );
+		}
+
+		$this->assertFileDoesNotExist( $path );
+	}
+
+	public function test_existing_refuses_an_empty_file(): void {
+		$path = $this->scratch() . '/empty.db';
+		touch( $path );
+
+		$this->expectExceptionMessage( 'empty' );
+		Database::existing( $path );
+	}
+
+	public function test_existing_refuses_a_database_without_the_table(): void {
+		$path = $this->scratch() . '/other.db';
+		Database::open( $path, Config::testing() )->pdo()->exec( 'CREATE TABLE other ( id INTEGER )' );
+
+		$this->expectExceptionMessage( '"settings"' );
+		Database::existing( $path, Config::testing(), 'settings' );
+	}
+
+	public function test_existing_opens_a_real_database_with_its_pragmas(): void {
+		$path = $this->scratch() . '/vault.db';
+		Database::open( $path, Config::testing() )->pdo()->exec( 'CREATE TABLE settings ( k TEXT )' );
+
+		$db = Database::existing( $path, Config::durable(), 'settings' );
+
+		$this->assertSame( 'wal', strtolower( (string) $db->value( 'PRAGMA journal_mode' ) ) );
+		$this->assertSame( 2, (int) $db->value( 'PRAGMA synchronous' ) );
+		$db->pdo()->exec( "INSERT INTO settings ( k ) VALUES ( 'x' )" );
+		$this->assertSame( 1, $db->count( 'settings' ) );
+	}
+
+	/* ─── JSON columns (1.6.0) ──────────────────────────────────────── */
+
+	public function test_to_json_keeps_text_readable_and_never_returns_false(): void {
+		$this->assertSame( '["a/b.zip","café"]', Database::to_json( array( 'a/b.zip', 'café' ) ) );
+		$this->assertSame( '{"n":1.0}', Database::to_json( array( 'n' => 1.0 ) ) );
+		$this->assertSame( '["a�b"]', Database::to_json( array( "a\xFFb" ) ) );
+		$this->assertSame( '[]', Database::to_json( array() ) );
+		$this->assertNull( Database::to_json( null ) );
+		$this->assertNull( Database::to_json( array(), null_if_empty: true ) );
+		$this->assertNull( Database::to_json( '', null_if_empty: true ) );
+		$this->assertSame( '{"a":1}', Database::to_json( array( 'a' => 1 ), null_if_empty: true ) );
+	}
+
+	public function test_to_json_throws_on_a_value_json_cannot_hold(): void {
+		$this->expectException( \JsonException::class );
+		Database::to_json( array( INF ) );
+	}
+
+	public function test_from_json_always_gives_an_array(): void {
+		$this->assertSame( array( 'a/b.zip' ), Database::from_json( '["a/b.zip"]' ) );
+		$this->assertSame( array( 'k' => 'v' ), Database::from_json( '{"k":"v"}' ) );
+
+		foreach ( array( null, '', '{broken', '"text"', '42', 'null', 7, array( 'x' ) ) as $stored ) {
+			$this->assertSame( array(), Database::from_json( $stored ), var_export( $stored, true ) );
+		}
+	}
+
+	public function test_from_json_works_as_a_column_decoder(): void {
+		$db = $this->db();
+		$db->insert( 'products', array( 'title' => 't', 'note' => Database::to_json( array( 'x', 'y' ) ) ) );
+		$db->decode( 'note', Database::from_json( ... ) );
+
+		$this->assertSame( array( 'x', 'y' ), $db->row( 'SELECT note FROM products' )['note'] ?? null );
+	}
+
 	/* ─── Sweep (1.3.0) ─────────────────────────────────────────────── */
 
 	public function test_a_dry_sweep_counts_and_changes_nothing(): void {

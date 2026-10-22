@@ -221,6 +221,25 @@ $db->all( 'SELECT * FROM items WHERE order_id IN ( ' . Database::ids( $orders ) 
 
 An empty list gives `IN ()`, which SQLite accepts: nothing is in it, and everything is not in it. No sentinel `0` that might one day be a real id.
 
+## Opening a database that must exist
+
+`open()` on a wrong path makes a new empty file and carries on. `existing()` refuses a missing file, an empty one, or one without the table you name — and never creates anything.
+
+```php
+$db = Database::existing( $path, Config::durable(), 'settings' );
+```
+
+## JSON columns
+
+```php
+Database::to_json( $files );                          // '["a/b.zip","café"]' — never false
+Database::to_json( $details, null_if_empty: true );   // NULL for [] or ''
+Database::from_json( $row['files'] );                 // always an array; [] for NULL or junk
+$db->decode( 'files', Database::from_json( ... ) );   // or decode it on every read
+```
+
+`to_json()` keeps slashes and non-ASCII as written, keeps `1.0` a float, and stores broken UTF-8 with U+FFFD instead of returning false — which, bound into an INSERT, would have stored an empty string with no error.
+
 ## Searching
 
 A term bound as `'%' . $q . '%'` is a pattern, not text: a `%` or `_` someone types is a wildcard, so `%` alone finds every row. `like()` escapes them; `ESCAPE` makes the escapes count.
@@ -274,7 +293,7 @@ composer install
 composer test
 ```
 
-121 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical. Also covered: insert-or-ignore that still refuses a broken row, upserts on columns and on expressions, unique-violation detection, empty and hostile lists, typed wildcards in searches, dry-run sweeps, the cache's first-caller-wins `add()`, and backup rotation by name.
+129 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical. Also covered: insert-or-ignore that still refuses a broken row, upserts on columns and on expressions, unique-violation detection, empty and hostile lists, typed wildcards in searches, databases that must already exist, JSON columns, dry-run sweeps, the cache's first-caller-wins `add()`, and backup rotation by name.
 
 ## License
 
