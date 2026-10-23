@@ -262,6 +262,21 @@ $settings->advance( 'totp_last_slot', $slot );    // stored only if higher — t
 new Settings( $db, 'options', 'date_updated', unix_time: true );   // another table, an INTEGER updated column
 ```
 
+## Settings forms
+
+`Catalogue` is the form in front of `Settings`: each setting defined once — type (`int`, `bool`, `string`, `text`), default, bounds, label, help — and that definition is what the page prints, what a submission is checked against, what is saved and what the code reads back. Bounds apply on the way out too, so an old row can't hand the code a value it doesn't expect. A blank field restores the default.
+
+```php
+$catalogue = new Catalogue( $settings, array(
+    'billing.grace_days' => array( 'type' => 'int', 'default' => 10, 'min' => 0, 'max' => 90, 'unit' => 'days', 'label' => 'Billing grace' ),
+) );
+
+$catalogue->problems( $form );          // key => "Must be between 0 and 90 days."
+$catalogue->save( $form );              // keys that changed — a default written back is not one
+$catalogue->get( 'billing.grace_days' );
+$catalogue->all();                      // value, default, label, help, bounds, field name — for the page
+```
+
 ## File permissions
 
 ```php
@@ -321,7 +336,7 @@ composer install
 composer test
 ```
 
-145 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical. Also covered: insert-or-ignore that still refuses a broken row, upserts on columns and on expressions, unique-violation detection, empty and hostile lists, typed wildcards in searches, databases that must already exist, JSON columns, settings and their defaults, dry-run sweeps, the cache's first-caller-wins `add()`, and backup rotation by name.
+153 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical. Also covered: insert-or-ignore that still refuses a broken row, upserts on columns and on expressions, unique-violation detection, empty and hostile lists, typed wildcards in searches, databases that must already exist, JSON columns, settings and their defaults, dry-run sweeps, the cache's first-caller-wins `add()`, and backup rotation by name.
 
 ## License
 
