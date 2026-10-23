@@ -1,6 +1,6 @@
 {
   "name": "sugarcommerce/sqlite",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "description": "SQLite for web applications: correct pragmas, type-aware binding, immediate write transactions with retry, schema introspection and idempotent migrations. Zero dependencies.",
   "type": "library",
   "license": "GPL-2.0-or-later",

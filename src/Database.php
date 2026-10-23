@@ -981,6 +981,34 @@ final class Database {
 	}
 
 	/**
+	 * Rebuild the database file without its free pages, giving back to the
+	 * disk the space deleted rows left behind.
+	 *
+	 * SQLite reuses free pages but never shrinks the file by itself, so after
+	 * a large delete — pruning old logs — the file stays its old size. This
+	 * rewrites the whole file and holds the write lock while it does: run it
+	 * off-peak after a big delete, not routinely. SQLite can't vacuum inside
+	 * a transaction.
+	 *
+	 * @since 1.10.0
+	 *
+	 * @return int Bytes the file shrank by; 0 when nothing was free.
+	 *
+	 * @throws \LogicException Inside a transaction.
+	 */
+	public function vacuum(): int {
+		if ( $this->pdo->inTransaction() ) {
+			throw new \LogicException( 'VACUUM cannot run inside a transaction.' );
+		}
+
+		$size   = fn (): int => self::whole( $this->value( 'PRAGMA page_count' ) ) * self::whole( $this->value( 'PRAGMA page_size' ) );
+		$before = $size();
+		$this->pdo->exec( 'VACUUM' );
+
+		return max( 0, $before - $size() );
+	}
+
+	/**
 	 * Run SQLite's integrity check.
 	 *
 	 * @since 1.0.0

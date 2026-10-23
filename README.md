@@ -308,6 +308,7 @@ Delete or update what a condition matches, or with `dry` only count it. Written 
 ```php
 $db->checkpoint();          // fold the -wal file back in, before a backup
 $db->optimize();            // PRAGMA optimize — cheap, run periodically
+$db->vacuum();              // shrink the file after a big delete; returns the bytes freed
 $db->integrity_check();     // true, or the problem found
 $db->snapshot( $path );     // VACUUM INTO: a consistent copy of a live database
 $db->exec_file( 'schema.sql' );   // every statement in a file; throws if unreadable

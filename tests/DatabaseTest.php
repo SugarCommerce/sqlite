@@ -453,6 +453,54 @@ final class DatabaseTest extends TestCase {
 		$this->assertTrue( true );
 	}
 
+	public function test_vacuum_gives_back_the_space_deleted_rows_left(): void {
+		$path = tempnam( sys_get_temp_dir(), 'sqlite-test-' );
+
+		try {
+			$db = Database::open( $path );
+			$db->query( self::SCHEMA );
+			$db->transaction( function ( Database $db ): void {
+				for ( $i = 0; $i < 2000; $i++ ) {
+					$db->insert( 'products', array( 'title' => str_repeat( 'x', 200 ) . $i ) );
+				}
+			} );
+			$this->assertSame( 0, $db->vacuum(), 'nothing free yet' );
+
+			$db->query( 'DELETE FROM products' );
+			$db->checkpoint();
+			$before = filesize( $path );
+
+			$freed = $db->vacuum();
+			$db->checkpoint();
+			clearstatcache();
+
+			$this->assertGreaterThan( 100000, $freed );
+			$this->assertLessThan( $before, filesize( $path ), 'the file itself is smaller' );
+			$this->assertSame( 0, $db->count( 'products' ) );
+		} finally {
+			foreach ( array( $path, $path . '-wal', $path . '-shm' ) as $file ) {
+				if ( is_file( $file ) ) {
+					unlink( $file );
+				}
+			}
+		}
+	}
+
+	public function test_vacuum_is_refused_inside_a_transaction(): void {
+		$db = $this->seeded();
+
+		$this->expectException( \LogicException::class );
+		$db->transaction( fn () => $db->vacuum() );
+	}
+
+	public function test_vacuum_works_on_a_memory_database(): void {
+		$db = $this->seeded();
+		$db->query( 'DELETE FROM products' );
+
+		$this->assertGreaterThanOrEqual( 0, $db->vacuum() );
+		$this->assertSame( 0, $db->count( 'products' ) );
+	}
+
 	public function test_an_unknown_checkpoint_mode_is_refused(): void {
 		$this->expectException( \InvalidArgumentException::class );
 		$this->db()->checkpoint( 'SOMETHING' );
