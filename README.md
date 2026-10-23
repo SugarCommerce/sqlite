@@ -257,6 +257,17 @@ $settings->all();                                  // key => value + updated_at,
 
 Read once per instance and cached; `set()`, `forget()` and `refresh()` drop the copy. A missing table reads as empty.
 
+```php
+$settings->advance( 'totp_last_slot', $slot );    // stored only if higher — two racing requests can't move it back
+new Settings( $db, 'options', 'date_updated', unix_time: true );   // another table, an INTEGER updated column
+```
+
+## File permissions
+
+```php
+Database::secure_files( $path );   // 0600 on the file, -wal and -shm; 0700 on its directory unless shared (/tmp)
+```
+
 ## Searching
 
 A term bound as `'%' . $q . '%'` is a pattern, not text: a `%` or `_` someone types is a wildcard, so `%` alone finds every row. `like()` escapes them; `ESCAPE` makes the escapes count.
@@ -310,7 +321,7 @@ composer install
 composer test
 ```
 
-139 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical. Also covered: insert-or-ignore that still refuses a broken row, upserts on columns and on expressions, unique-violation detection, empty and hostile lists, typed wildcards in searches, databases that must already exist, JSON columns, settings and their defaults, dry-run sweeps, the cache's first-caller-wins `add()`, and backup rotation by name.
+145 tests. Both bugs above are covered by tests that first **demonstrate the failure against raw PDO**, then show it fixed — so the suite proves the problem is real, not theoretical. Also covered: insert-or-ignore that still refuses a broken row, upserts on columns and on expressions, unique-violation detection, empty and hostile lists, typed wildcards in searches, databases that must already exist, JSON columns, settings and their defaults, dry-run sweeps, the cache's first-caller-wins `add()`, and backup rotation by name.
 
 ## License
 

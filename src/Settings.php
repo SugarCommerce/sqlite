@@ -62,16 +62,32 @@ final class Settings {
 	private readonly string $table;
 
 	/**
-	 * @since 1.7.0
-	 *
-	 * @param Database $db    Where the table is.
-	 * @param string   $table Its name.
-	 *
-	 * @throws \InvalidArgumentException On a table name that is not a bare
-	 *                                   identifier.
+	 * The quoted column that records when a row last changed.
 	 */
-	public function __construct( private readonly Database $db, string $table = 'settings' ) {
-		$this->table = Database::identifier( $table );
+	private readonly string $updated;
+
+	/**
+	 * What the updated column is set to: SQL for the current time.
+	 */
+	private readonly string $now;
+
+	/**
+	 * @since 1.7.0
+	 * @since 1.8.0 $updated_column and $unix_time.
+	 *
+	 * @param Database $db             Where the table is.
+	 * @param string   $table          Its name.
+	 * @param string   $updated_column The column recording when a row changed.
+	 * @param bool     $unix_time      Store that as Unix seconds (an INTEGER
+	 *                                 column) rather than 'Y-m-d H:i:s' UTC.
+	 *
+	 * @throws \InvalidArgumentException On a table or column name that is not
+	 *                                   a bare identifier.
+	 */
+	public function __construct( private readonly Database $db, string $table = 'settings', string $updated_column = 'updated_at', bool $unix_time = false ) {
+		$this->table   = Database::identifier( $table );
+		$this->updated = Database::identifier( $updated_column );
+		$this->now     = $unix_time ? "CAST( strftime( '%s', 'now' ) AS INTEGER )" : "datetime( 'now' )";
 	}
 
 	/**
@@ -148,7 +164,8 @@ final class Settings {
 
 	/**
 	 * Every stored setting with when it last changed, for an admin page.
-	 * Read fresh, not from the cached copy.
+	 * Read fresh, not from the cached copy. `updated_at` is the updated
+	 * column's value, whatever the column is called.
 	 *
 	 * @since 1.7.0
 	 *
@@ -157,7 +174,7 @@ final class Settings {
 	public function all(): array {
 		$all = array();
 
-		foreach ( $this->rows( 'SELECT key, value, updated_at FROM ' . $this->table ) as $row ) {
+		foreach ( $this->rows( 'SELECT key, value, ' . $this->updated . ' AS updated_at FROM ' . $this->table ) as $row ) {
 			$all[ self::text( $row['key'] ?? '' ) ] = array(
 				'value'      => self::text( $row['value'] ?? '' ),
 				'updated_at' => self::text( $row['updated_at'] ?? '' ),
@@ -180,8 +197,8 @@ final class Settings {
 	 */
 	public function set( string $key, string $value ): void {
 		$this->db->query(
-			'INSERT INTO ' . $this->table . " ( key, value, updated_at ) VALUES ( :key, :value, datetime( 'now' ) )
-			 ON CONFLICT ( key ) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+			'INSERT INTO ' . $this->table . ' ( key, value, ' . $this->updated . ' ) VALUES ( :key, :value, ' . $this->now . ' )
+			 ON CONFLICT ( key ) DO UPDATE SET value = excluded.value, ' . $this->updated . ' = excluded.' . $this->updated,
 			array(
 				'key'   => $key,
 				'value' => $value,
@@ -195,15 +212,50 @@ final class Settings {
 	 * Remove a setting, so its default applies again.
 	 *
 	 * @since 1.7.0
+	 * @since 1.8.0 Returns whether a row was removed.
 	 *
 	 * @param string $key Setting name.
 	 *
-	 * @return void
+	 * @return bool
 	 */
-	public function forget( string $key ): void {
-		$this->db->query( 'DELETE FROM ' . $this->table . ' WHERE key = :key', array( 'key' => $key ) );
+	public function forget( string $key ): bool {
+		$removed = $this->db->query( 'DELETE FROM ' . $this->table . ' WHERE key = :key', array( 'key' => $key ) )->rowCount() > 0;
 
 		$this->values = null;
+
+		return $removed;
+	}
+
+	/**
+	 * Raise a counter, never lower it.
+	 *
+	 * For a value that must only go forward even when two requests race —
+	 * the last one-time-code slot used, a sessions epoch: stored when the
+	 * setting is absent or holds a smaller integer, in one statement, so a
+	 * slower request can never write an older value over a newer one. True
+	 * when this call stored it.
+	 *
+	 * @since 1.8.0
+	 *
+	 * @param string $key   Setting name.
+	 * @param int    $value The new value.
+	 *
+	 * @return bool
+	 */
+	public function advance( string $key, int $value ): bool {
+		$stored = 1 === $this->db->query(
+			'INSERT INTO ' . $this->table . ' ( key, value, ' . $this->updated . ' ) VALUES ( :key, :value, ' . $this->now . ' )
+			 ON CONFLICT ( key ) DO UPDATE SET value = excluded.value, ' . $this->updated . ' = excluded.' . $this->updated . '
+			 WHERE CAST( ' . $this->table . '.value AS INTEGER ) < CAST( excluded.value AS INTEGER )',
+			array(
+				'key'   => $key,
+				'value' => (string) $value,
+			)
+		)->rowCount();
+
+		$this->values = null;
+
+		return $stored;
 	}
 
 	/**

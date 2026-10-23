@@ -138,4 +138,44 @@ final class SettingsTest extends TestCase {
 		$this->expectException( \InvalidArgumentException::class );
 		new Settings( $db, 'settings; DROP TABLE x' );
 	}
+
+	/* ─── 1.8.0 ─────────────────────────────────────────────────────── */
+
+	public function test_forget_says_whether_there_was_anything(): void {
+		$this->settings->set( 'k', 'v' );
+
+		$this->assertTrue( $this->settings->forget( 'k' ) );
+		$this->assertFalse( $this->settings->forget( 'k' ) );
+	}
+
+	public function test_advance_only_ever_raises(): void {
+		$this->assertTrue( $this->settings->advance( 'slot', 10 ), 'absent: stored' );
+		$this->assertFalse( $this->settings->advance( 'slot', 9 ), 'lower: refused' );
+		$this->assertFalse( $this->settings->advance( 'slot', 10 ), 'equal: refused (a replayed code)' );
+		$this->assertTrue( $this->settings->advance( 'slot', 11 ) );
+		$this->assertSame( 11, $this->settings->int( 'slot', 0 ), 'and the cached copy follows' );
+		$this->assertTrue( $this->settings->advance( 'neg', -5 ) );
+		$this->assertTrue( $this->settings->advance( 'neg', -4 ) );
+	}
+
+	public function test_another_updated_column_holding_unix_time(): void {
+		$db       = Database::memory( 'CREATE TABLE options ( key TEXT PRIMARY KEY, value TEXT NOT NULL, date_updated INTEGER NOT NULL DEFAULT 0 );' );
+		$settings = new Settings( $db, 'options', 'date_updated', unix_time: true );
+		$before   = time();
+
+		$settings->set( 'site_name', 'Shop' );
+		$settings->advance( 'epoch', 3 );
+
+		$this->assertSame( 'Shop', $settings->string( 'site_name' ) );
+		$this->assertSame( 3, $settings->int( 'epoch', 0 ) );
+		$this->assertGreaterThanOrEqual( $before, (int) $db->value( "SELECT date_updated FROM options WHERE key = 'site_name'" ) );
+		$this->assertSame( 'integer', $db->value( "SELECT typeof( date_updated ) FROM options WHERE key = 'epoch'" ) );
+		$this->assertMatchesRegularExpression( '/^\d{10}$/', $settings->all()['site_name']['updated_at'] );
+	}
+
+	public function test_a_bad_column_name_is_refused(): void {
+		$this->expectException( \InvalidArgumentException::class );
+
+		new Settings( $this->db, 'settings', 'updated_at; DROP TABLE x' );
+	}
 }

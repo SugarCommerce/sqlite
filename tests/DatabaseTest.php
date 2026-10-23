@@ -744,6 +744,40 @@ final class DatabaseTest extends TestCase {
 		$this->assertSame( 1, $db->count( 'settings' ) );
 	}
 
+	/* ─── secure_files (1.8.0) ──────────────────────────────────────── */
+
+	public function test_secure_files_leaves_the_database_to_its_owner(): void {
+		$dir  = $this->scratch();
+		$path = $dir . '/app.db';
+		$db   = Database::open( $path, Config::production() );
+		$db->pdo()->exec( 'CREATE TABLE t ( id INTEGER ); INSERT INTO t VALUES ( 1 )' );
+		chmod( $dir, 0755 );
+		chmod( $path, 0644 );
+
+		$this->assertSame( array(), Database::secure_files( $path ) );
+		clearstatcache();
+		$this->assertSame( '0700', substr( sprintf( '%o', fileperms( $dir ) ), -4 ) );
+		$this->assertSame( '0600', substr( sprintf( '%o', fileperms( $path ) ), -4 ) );
+
+		foreach ( array( '-wal', '-shm' ) as $suffix ) {
+			if ( is_file( $path . $suffix ) ) {
+				$this->assertSame( '0600', substr( sprintf( '%o', fileperms( $path . $suffix ) ), -4 ), $suffix );
+			}
+		}
+	}
+
+	public function test_secure_files_leaves_a_shared_directory_alone(): void {
+		$dir = $this->scratch();
+		chmod( $dir, 01777 );
+		touch( $dir . '/app.db' );
+
+		Database::secure_files( $dir . '/app.db' );
+		clearstatcache();
+
+		$this->assertSame( '1777', substr( sprintf( '%o', fileperms( $dir ) ), -4 ) );
+		$this->assertSame( '0600', substr( sprintf( '%o', fileperms( $dir . '/app.db' ) ), -4 ) );
+	}
+
 	/* ─── JSON columns (1.6.0) ──────────────────────────────────────── */
 
 	public function test_to_json_keeps_text_readable_and_never_returns_false(): void {

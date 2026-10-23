@@ -114,6 +114,43 @@ final class Database {
 	}
 
 	/**
+	 * Make a database file readable by its owner only.
+	 *
+	 * The file is every customer's data, and its -wal and -shm siblings hold
+	 * the most recent of it; nobody else on a shared box should be able to
+	 * read any of them. Sets 0600 on the file and whichever siblings exist,
+	 * and 0700 on its directory — unless that is shared: a database path
+	 * under /tmp must not lock everyone else out of /tmp, so a sticky
+	 * directory, or /, is left alone. Run it after creating or migrating
+	 * the file, and on every deploy, so anything made by hand is brought
+	 * into line.
+	 *
+	 * @since 1.8.0
+	 *
+	 * @param string $path The database file.
+	 *
+	 * @return list<string> The files and directory it could not change, empty
+	 *                      when all went well.
+	 */
+	public static function secure_files( string $path ): array {
+		$failed = array();
+		$dir    = dirname( $path );
+		$perms  = @fileperms( $dir );
+
+		if ( false !== $perms && 0 === ( $perms & 01000 ) && '/' !== $dir && ! @chmod( $dir, 0700 ) ) {
+			$failed[] = $dir;
+		}
+
+		foreach ( array( '', '-wal', '-shm' ) as $suffix ) {
+			if ( is_file( $path . $suffix ) && ! @chmod( $path . $suffix, 0600 ) ) {
+				$failed[] = $path . $suffix;
+			}
+		}
+
+		return $failed;
+	}
+
+	/**
 	 * Open a database that has to be there already.
 	 *
 	 * `open()` on a path that is wrong — a typo in .env, a deploy that
