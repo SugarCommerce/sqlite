@@ -273,8 +273,13 @@ $catalogue = new Catalogue( $settings, array(
 
 $catalogue->problems( $form );          // key => "Must be between 0 and 90 days."
 $catalogue->save( $form );              // keys that changed — a default written back is not one
-$catalogue->get( 'billing.grace_days' );
+$catalogue->int( 'billing.grace_days' );  // typed reads: int(), string(), bool() — a key of another type throws
 $catalogue->all();                      // value, default, label, help, bounds, field name — for the page
+
+// One setting at a time, for a command line or an API:
+$catalogue->has( $key );                // only defined settings — not rows the code keeps for itself
+$catalogue->problems( [ $key => $value ] );
+$catalogue->set( $key, $value );        // same rules as save(); true when the value changed
 ```
 
 ## File permissions

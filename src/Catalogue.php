@@ -134,6 +134,73 @@ final class Catalogue {
 	}
 
 	/**
+	 * A whole-number setting, within its bounds.
+	 *
+	 * @since 1.11.0
+	 *
+	 * @param string $key Setting name.
+	 *
+	 * @return int
+	 *
+	 * @throws \InvalidArgumentException On a key that is not defined, or not
+	 *                                   an `int`.
+	 */
+	public function int( string $key ): int {
+		$value = $this->typed( $key, 'int' );
+
+		return is_int( $value ) ? $value : 0;
+	}
+
+	/**
+	 * A `string` or `text` setting.
+	 *
+	 * @since 1.11.0
+	 *
+	 * @param string $key Setting name.
+	 *
+	 * @return string
+	 *
+	 * @throws \InvalidArgumentException On a key that is not defined, or not
+	 *                                   a `string` or `text`.
+	 */
+	public function string( string $key ): string {
+		$value = $this->typed( $key, 'string', 'text' );
+
+		return is_string( $value ) ? $value : '';
+	}
+
+	/**
+	 * A checkbox setting.
+	 *
+	 * @since 1.11.0
+	 *
+	 * @param string $key Setting name.
+	 *
+	 * @return bool
+	 *
+	 * @throws \InvalidArgumentException On a key that is not defined, or not
+	 *                                   a `bool`.
+	 */
+	public function bool( string $key ): bool {
+		return true === $this->typed( $key, 'bool' );
+	}
+
+	/**
+	 * Whether a key is one of the defined settings — what a command line or
+	 * an API checks before letting a caller change it, so values kept in the
+	 * same table for the code's own use can't be.
+	 *
+	 * @since 1.11.0
+	 *
+	 * @param string $key Setting name.
+	 *
+	 * @return bool
+	 */
+	public function has( string $key ): bool {
+		return isset( $this->definitions[ $key ] );
+	}
+
+	/**
 	 * Every setting, for the page: value, default and what to print.
 	 *
 	 * @since 1.9.0
@@ -230,39 +297,57 @@ final class Catalogue {
 		$changed = array();
 
 		foreach ( $this->definitions as $key => $definition ) {
-			$raw    = $this->submitted( $submitted, $key );
-			$before = $this->get( $key );
+			$raw = $this->submitted( $submitted, $key );
 
-			if ( 'bool' === $definition['type'] ) {
-				$on = null !== $raw && ! in_array( strtolower( trim( is_scalar( $raw ) ? (string) $raw : '' ) ), array( '', '0', 'false', 'off', 'no' ), true );
-
-				if ( $on !== $before ) {
-					$this->settings->set( $key, $on ? '1' : '0' );
-				}
-			} elseif ( null === $raw ) {
-				continue;
-			} else {
-				$value = is_scalar( $raw ) ? trim( (string) $raw ) : '';
-
-				if ( '' === $value ) {
-					$this->settings->forget( $key );
-				} else {
-					$target = 'int' === $definition['type']
-						? min( $definition['max'], max( $definition['min'], false === ( $number = filter_var( $value, FILTER_VALIDATE_INT ) ) ? ( is_int( $definition['default'] ) ? $definition['default'] : 0 ) : $number ) )
-						: mb_substr( 'string' === $definition['type'] ? (string) preg_replace( '/\s+/u', ' ', $value ) : $value, 0, $definition['max_length'] );
-
-					if ( $target !== $before ) {
-						$this->settings->set( $key, (string) $target );
-					}
-				}
-			}
-
-			if ( $this->get( $key ) !== $before ) {
+			if ( ( null !== $raw || 'bool' === $definition['type'] ) && $this->set( $key, $raw ) ) {
 				$changed[] = $key;
 			}
 		}
 
 		return $changed;
+	}
+
+	/**
+	 * Save one setting, by the same rules as save(), and say whether its
+	 * value changed — for a command line or an API that changes one thing.
+	 *
+	 * Check problems() first; this clamps and cuts rather than refusing. A
+	 * blank value, or null, removes the setting so its default applies; a
+	 * checkbox is on for any value but blank, null, 0, false, off and no.
+	 *
+	 * @since 1.11.0
+	 *
+	 * @param string $key   Setting name.
+	 * @param mixed  $value The new value, as a form would submit it.
+	 *
+	 * @return bool True when the value in effect changed.
+	 *
+	 * @throws \InvalidArgumentException On a key that is not defined.
+	 */
+	public function set( string $key, mixed $value ): bool {
+		$definition = $this->definition( $key );
+		$before     = $this->get( $key );
+		$text       = is_scalar( $value ) ? trim( (string) $value ) : '';
+
+		if ( 'bool' === $definition['type'] ) {
+			$on = ! in_array( strtolower( $text ), array( '', '0', 'false', 'off', 'no' ), true );
+
+			if ( $on !== $before ) {
+				$this->settings->set( $key, $on ? '1' : '0' );
+			}
+		} elseif ( '' === $text ) {
+			$this->settings->forget( $key );
+		} else {
+			$target = 'int' === $definition['type']
+				? min( $definition['max'], max( $definition['min'], false === ( $number = filter_var( $text, FILTER_VALIDATE_INT ) ) ? ( is_int( $definition['default'] ) ? $definition['default'] : 0 ) : $number ) )
+				: mb_substr( 'string' === $definition['type'] ? (string) preg_replace( '/\s+/u', ' ', $text ) : $text, 0, $definition['max_length'] );
+
+			if ( $target !== $before ) {
+				$this->settings->set( $key, (string) $target );
+			}
+		}
+
+		return $this->get( $key ) !== $before;
 	}
 
 	/**
@@ -290,6 +375,27 @@ final class Catalogue {
 	 */
 	private function definition( string $key ): array {
 		return $this->definitions[ $key ] ?? throw new \InvalidArgumentException( 'No such setting: ' . $key );
+	}
+
+	/**
+	 * A setting's value, refusing a key of another type: reading a number
+	 * as text is a mistake to find now, not a quiet zero later.
+	 *
+	 * @since 1.11.0
+	 *
+	 * @param string $key      Setting name.
+	 * @param string ...$types The types the caller can take.
+	 *
+	 * @return int|bool|string
+	 */
+	private function typed( string $key, string ...$types ): int|bool|string {
+		$type = $this->definition( $key )['type'];
+
+		if ( ! in_array( $type, $types, true ) ) {
+			throw new \InvalidArgumentException( sprintf( 'Setting %s is a %s, not a %s.', $key, $type, implode( ' or ', $types ) ) );
+		}
+
+		return $this->get( $key );
 	}
 
 	/**

@@ -93,6 +93,53 @@ final class CatalogueTest extends TestCase {
 		$this->assertSame( 'bool', $all['maintenance']['type'] );
 	}
 
+	public function test_typed_reads_refuse_a_key_of_another_type(): void {
+		$this->catalogue->save( array( 'billing.grace_days' => '30', 'footer' => "Line one\nLine two", 'emails' => '' ) );
+
+		$this->assertSame( 30, $this->catalogue->int( 'billing.grace_days' ) );
+		$this->assertSame( 'Shop', $this->catalogue->string( 'site_name' ) );
+		$this->assertSame( "Line one\nLine two", $this->catalogue->string( 'footer' ), 'text is a string' );
+		$this->assertFalse( $this->catalogue->bool( 'emails' ) );
+
+		$this->expectException( \InvalidArgumentException::class );
+		$this->expectExceptionMessage( 'Setting billing.grace_days is a int, not a string or text.' );
+		$this->catalogue->string( 'billing.grace_days' );
+	}
+
+	public function test_has_is_only_the_defined_settings(): void {
+		$this->db->query( "INSERT INTO settings ( key, value ) VALUES ( 'session_epoch', '3' )" );
+
+		$this->assertTrue( $this->catalogue->has( 'billing.grace_days' ) );
+		$this->assertFalse( $this->catalogue->has( 'session_epoch' ), 'a row the code keeps for itself' );
+		$this->assertFalse( $this->catalogue->has( '' ) );
+	}
+
+	public function test_set_changes_one_setting_by_the_same_rules(): void {
+		$this->assertTrue( $this->catalogue->set( 'billing.grace_days', ' 45 ' ) );
+		$this->assertFalse( $this->catalogue->set( 'billing.grace_days', '45' ), 'same value, no change' );
+		$this->assertTrue( $this->catalogue->set( 'billing.grace_days', '-5' ) );
+		$this->assertSame( 0, $this->catalogue->int( 'billing.grace_days' ), 'clamped to the minimum' );
+		$this->assertTrue( $this->catalogue->set( 'billing.grace_days', '' ) );
+		$this->assertSame( 10, $this->catalogue->int( 'billing.grace_days' ), 'blank restores the default' );
+
+		$this->assertTrue( $this->catalogue->set( 'maintenance', 'on' ) );
+		$this->assertTrue( $this->catalogue->bool( 'maintenance' ) );
+		$this->assertTrue( $this->catalogue->set( 'maintenance', 'no' ) );
+		$this->assertTrue( $this->catalogue->bool( 'emails' ), 'other checkboxes untouched' );
+
+		$this->assertTrue( $this->catalogue->set( 'site_name', "Big\n  Shop" ) );
+		$this->assertSame( 'Big Shop', $this->catalogue->string( 'site_name' ) );
+		$this->assertTrue( $this->catalogue->set( 'site_name', null ) );
+		$this->assertSame( 'Shop', $this->catalogue->string( 'site_name' ), 'null restores the default too' );
+		$this->assertSame( 0, (int) $this->db->value( "SELECT COUNT(*) FROM settings WHERE key = 'footer'" ), 'nothing written for untouched keys' );
+	}
+
+	public function test_set_refuses_an_unknown_key(): void {
+		$this->expectException( \InvalidArgumentException::class );
+
+		$this->catalogue->set( 'session_epoch', '4' );
+	}
+
 	public function test_an_unknown_key_is_a_mistake(): void {
 		$this->expectException( \InvalidArgumentException::class );
 
